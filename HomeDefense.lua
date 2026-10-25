@@ -2,14 +2,15 @@
 -- Aimbot credit: Exunys https://github.com/Exunys/Aimbot-V3 (CC0-1.0).
 -- Generic player-character support; not tested against this game's weapons.
 -- Rayfield credit: Sirius https://docs.sirius.menu/rayfield
--- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | K menu
+-- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | F1 menu
 local env = getgenv()
 if env.HomeDefenseHelper then env.HomeDefenseHelper.Unload() end
 
 local Config = {
-    Aim = true, TeamCheck = true, WallCheck = true,
+    Aim = true, AimAlways = false, TeamCheck = true, WallCheck = true,
     AimPart = "Head", Radius = 150, Smoothing = 0.08,
     Trigger = false, TriggerDelay = 0.12, FireInterval = 0.15,
+    TriggerMode = "Auto", TriggerPoint = "Auto",
     Hitboxes = false, HitboxSize = 6, Highlights = false,
     MaxDistance = 1500, ShowFOV = true, Tracer = false,
     ESPNames = true, ESPHealth = true, ESPDistance = true, ESPTeamColors = true,
@@ -24,12 +25,33 @@ local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 local connections, originals, highlights = {}, {}, {}
 local Rayfield, uiToggles
+local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
+local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
-    Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End}
+    Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
+    Menu = Enum.KeyCode.F1}
+local HttpService = game:GetService("HttpService")
+local keyFile = "HomeDefense-keys-v3.json"
+pcall(function()
+    if isfile and readfile and isfile(keyFile) then
+        local saved = HttpService:JSONDecode(readfile(keyFile))
+        for action in pairs(keys) do
+            local name = saved[action]
+            if type(name) == "string" then
+                if action == "Aim" and name == "MouseButton2" then keys[action] = Enum.UserInputType.MouseButton2
+                elseif Enum.KeyCode[name] then keys[action] = Enum.KeyCode[name] end
+            end
+        end
+    end
+end)
 local lightingOriginals, cameraOriginals = {}, {}
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
 local active, aimedAt, aimedSince, lastShot = true, nil, 0, 0
 local originalSensitivity = Input.MouseDeltaSensitivity
+local function releaseFire()
+    if fireHeld then pcall(function() mouse1release() end); fireHeld = false end
+    if heldTool then pcall(function() heldTool:Deactivate() end); heldTool = nil end
+end
 local Aimbot
 local function enemy(player)
     return player ~= LocalPlayer and (not Config.TeamCheck
@@ -55,6 +77,7 @@ end
 local function unload()
     if not active then return end
     active = false
+    releaseFire()
     for _, connection in ipairs(connections) do connection:Disconnect() end
     for part in pairs(originals) do restore(part) end
     for _, visual in pairs(highlights) do
@@ -91,7 +114,7 @@ Aimbot.Settings.TeamCheck = Config.TeamCheck
 Aimbot.Settings.WallCheck = Config.WallCheck
 Aimbot.Settings.LockPart = Config.AimPart
 Aimbot.Settings.Sensitivity = Config.Smoothing
-Aimbot.Settings.TriggerKey = Enum.UserInputType.MouseButton2
+Aimbot.Settings.TriggerKey = keys.Aim
 Aimbot.Settings.Toggle = false
 Aimbot.FOVSettings.Radius = Config.Radius
 Aimbot.ClosestPlayerTracer.Enabled = false
@@ -101,32 +124,77 @@ local loaded, loadError = pcall(function() Aimbot.Load() end)
 if not loaded then unload(); error(tostring(loadError)) end
 
 local mouse = LocalPlayer:GetMouse()
+local function status(message)
+    if triggerStatus and message ~= triggerStatus.LastMessage then
+        triggerStatus.LastMessage = message
+        triggerStatus:Set("Trigger: " .. message)
+    end
+end
 local function triggerTarget()
     local camera = workspace.CurrentCamera
     if not camera then return end
-    local target = mouse.Target
-    if not target then return end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignored = {camera}
+    if LocalPlayer.Character then table.insert(ignored, LocalPlayer.Character) end
+    params.FilterDescendantsInstances = ignored
+    local centered = Config.TriggerPoint == "Center" or
+        (Config.TriggerPoint == "Auto" and Input.MouseBehavior == Enum.MouseBehavior.LockCenter)
+    local ray
+    if centered then
+        ray = camera:ViewportPointToRay(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    else
+        local location = Input:GetMouseLocation()
+        ray = camera:ScreenPointToRay(location.X, location.Y)
+    end
+    local hit = workspace:Raycast(ray.Origin, ray.Direction * Config.MaxDistance, params)
+    local target = hit and hit.Instance
+    if not target then status("no target under crosshair"); return end
     local model = target
     local player
     while model and not player do
         if model:IsA("Model") then player = Players:GetPlayerFromCharacter(model) end
         if not player then model = model.Parent end
     end
-    if not player or not enemy(player) or not living(player) then return end
-    local position = mouse.Hit.Position
-    if (position - camera.CFrame.Position).Magnitude > Config.MaxDistance then return end
-    if Config.WallCheck then
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = {LocalPlayer.Character, camera}
-        local hit = workspace:Raycast(camera.CFrame.Position, position - camera.CFrame.Position, params)
-        if hit and not hit.Instance:IsDescendantOf(player.Character) then return end
-    end
+    if not player then status("crosshair on scenery / NPC"); return end
+    if not enemy(player) then status("blocked by team check"); return end
+    if not living(player) then status("target is dead"); return end
+    -- The first ray hit must belong to the target, so walls always block firing.
     return player
 end
 
 connections[#connections + 1] = Input.InputBegan:Connect(function(input, processed)
+    if capturingKey then
+        local action = capturingKey
+        local chosen = input.KeyCode
+        if input.KeyCode == Enum.KeyCode.Escape then
+            capturingKey = nil
+            keyButtons[action].Text = keys[action].Name
+            return
+        end
+        if action == "Aim" and input.UserInputType == Enum.UserInputType.MouseButton2 then chosen = input.UserInputType end
+        if chosen == Enum.KeyCode.Unknown then return end
+        for other, key in pairs(keys) do
+            if other ~= action and key == chosen then
+                if Rayfield then Rayfield:Notify({Title = "Key already used", Content = "Choose a different key; " .. other .. " uses this one.", Duration = 3}) end
+                return
+            end
+        end
+        keys[action] = chosen
+        if action == "Aim" then Aimbot.Settings.TriggerKey = chosen end
+        keyButtons[action].Text = chosen.Name
+        capturingKey = nil
+        pcall(function()
+            if writefile then
+                local saved = {}
+                for name, key in pairs(keys) do saved[name] = key.Name end
+                writefile(keyFile, HttpService:JSONEncode(saved))
+            end
+        end)
+        return
+    end
     if processed or Input:GetFocusedTextBox() then return end
+    if input.KeyCode == keys.Menu and Rayfield then Rayfield:SetVisibility(not Rayfield:IsVisible()); return end
     if input.KeyCode == keys.Unload then unload(); return end
     local function flip(property)
         local value = not Config[property]
@@ -142,16 +210,39 @@ local elapsed = 0
 connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     if not active then return end
     local now = os.clock()
-    local target = Config.Trigger and not Input:GetFocusedTextBox() and triggerTarget() or nil
+    if releaseAt and now >= releaseAt then releaseFire(); releaseAt = nil end
+    local blocked = capturingKey or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
+    local target = Config.Trigger and not blocked and triggerTarget() or nil
+    if not Config.Trigger or blocked then
+        releaseFire()
+        status(Config.Trigger and "paused: hide menu to fire" or "off")
+    end
     if target ~= aimedAt then aimedAt, aimedSince = target, now end
     if target and now - aimedSince >= Config.TriggerDelay and now - lastShot >= Config.FireInterval then
         local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        if tool then tool:Activate(); lastShot = now end
+        local mode = Config.TriggerMode
+        local canClick = type(mouse1press) == "function" and type(mouse1release) == "function"
+        local canSingleClick = type(mouse1click) == "function"
+        if mode == "Auto" then mode = (canClick or canSingleClick) and "Mouse" or "Tool" end
+        if mode == "Mouse" and (canClick or canSingleClick) then
+            local fired, err = pcall(function()
+                if canClick then mouse1press(); fireHeld = true; releaseAt = now + 0.04
+                else mouse1click() end
+            end)
+            status(fired and ("clicking at " .. target.Name) or ("input failed: " .. tostring(err)))
+            lastShot = now
+        elseif mode == "Tool" and tool then
+            local fired, err = pcall(function() tool:Activate(); heldTool = tool; releaseAt = now + 0.04 end)
+            status(fired and ("activating " .. tool.Name) or ("tool failed: " .. tostring(err)))
+            lastShot = now
+        else
+            status(mode == "Mouse" and "executor mouse input unavailable; try Tool mode" or "equip a weapon")
+        end
     end
     elapsed = elapsed + dt
     if elapsed < 0.1 then return end
     elapsed = 0
-    Aimbot.Settings.Enabled = Config.Aim
+    Aimbot.Settings.Enabled = Config.Aim and not Config.AimAlways
     Aimbot.Settings.TeamCheck = Config.TeamCheck
     Aimbot.Settings.WallCheck = Config.WallCheck
     Aimbot.Settings.LockPart = Config.AimPart
@@ -252,21 +343,102 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         end
     end
 end)
+connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
+    if not active or not Config.Aim or not Config.AimAlways or capturingKey
+        or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible()) then return end
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+    local cursor = Input:GetMouseLocation()
+    local closest, distance = nil, Config.Radius
+    for _, player in ipairs(Players:GetPlayers()) do
+        local character = enemy(player) and living(player)
+        local part = character and character:FindFirstChild(Config.AimPart)
+        if part then
+            local point, visible = camera:WorldToScreenPoint(part.Position)
+            local screenDistance = (Vector2.new(point.X, point.Y) - cursor).Magnitude
+            if visible and screenDistance < distance then
+                local clear = true
+                if Config.WallCheck then
+                    local params = RaycastParams.new()
+                    params.FilterType = Enum.RaycastFilterType.Exclude
+                    local ignored = {camera}
+                    if LocalPlayer.Character then table.insert(ignored, LocalPlayer.Character) end
+                    params.FilterDescendantsInstances = ignored
+                    local hit = workspace:Raycast(camera.CFrame.Position, part.Position - camera.CFrame.Position, params)
+                    clear = not hit or hit.Instance:IsDescendantOf(character)
+                end
+                if clear then closest, distance = part, screenDistance end
+            end
+        end
+    end
+    if closest then
+        local goal = CFrame.lookAt(camera.CFrame.Position, closest.Position)
+        local alpha = Config.Smoothing <= 0 and 1 or 1 - math.exp(-dt / Config.Smoothing)
+        camera.CFrame = camera.CFrame:Lerp(goal, alpha)
+    end
+end)
 -- Configuration flags are unique; saved Rayfield values flow through callbacks.
 local guiOK, guiError = pcall(function()
     Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
     local window = Rayfield:CreateWindow({
         Name = "Home Defense", LoadingTitle = "Home Defense", LoadingSubtitle = "professorzycro",
         Theme = "Default", ShowText = "Home Defense", DisableRayfieldPrompts = true,
+        -- Our handler supports rebinding the menu without rebuilding the window.
+        ToggleUIKeybind = Enum.KeyCode.F24,
         ConfigurationSaving = {Enabled = true, FolderName = "ProfessorZycro", FileName = "HomeDefense-v2"},
         Discord = {Enabled = false}, KeySystem = false,
     })
     if not active then Rayfield:Destroy(); return end
     uiToggles = {}
-    local function toggle(tab, name, property)
+    local function attachKey(name, action)
+        local roots = {playerGui}
+        pcall(function() table.insert(roots, game:GetService("CoreGui")) end)
+        pcall(function() if gethui then table.insert(roots, gethui()) end end)
+        local row
+        for _, root in ipairs(roots) do
+            pcall(function()
+                for _, candidate in ipairs(root:GetDescendants()) do
+                    local title = candidate:FindFirstChild("Title")
+                    if candidate.Name == name and title and title:IsA("TextLabel") and title.Text == name then
+                        row = candidate
+                        break
+                    end
+                end
+            end)
+            if row then break end
+        end
+        if not row then error("Cannot attach inline key control: " .. name) end
+        local button = Instance.new("TextButton")
+        button.Name = "InlineKeybind"
+        button.AnchorPoint = Vector2.new(1, 0.5)
+        button.Position = UDim2.new(1, row:FindFirstChild("Switch") and -70 or -12, 0.5, 0)
+        button.Size = UDim2.fromOffset(78, 26)
+        button.BackgroundColor3 = Color3.fromRGB(48, 48, 56)
+        button.TextColor3 = Color3.fromRGB(240, 240, 245)
+        button.Font = Enum.Font.GothamMedium
+        button.TextSize = 11
+        button.Text = keys[action].Name
+        button.ZIndex = row.ZIndex + 5
+        button.Parent = row
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 5)
+        corner.Parent = button
+        local title = row.Title
+        title.Size = UDim2.new(1, row:FindFirstChild("Switch") and -170 or -110, 1, 0)
+        title.TextTruncate = Enum.TextTruncate.AtEnd
+        keyButtons[action] = button
+        connections[#connections + 1] = button.MouseButton1Click:Connect(function()
+            if capturingKey and keyButtons[capturingKey] then keyButtons[capturingKey].Text = keys[capturingKey].Name end
+            capturingKey = action
+            button.Text = "Press key..."
+            releaseFire()
+        end)
+    end
+    local function toggle(tab, name, property, action)
         local control = tab:CreateToggle({Name = name, CurrentValue = Config[property], Flag = "HD_" .. property,
             Callback = function(value) Config[property] = value end})
         uiToggles[property] = control
+        if action then attachKey(name, action) end
     end
     local function slider(tab, name, property, minimum, maximum, increment)
         tab:CreateSlider({Name = name, Range = {minimum, maximum}, Increment = increment or 1,
@@ -274,7 +446,8 @@ local guiOK, guiError = pcall(function()
             Callback = function(value) Config[property] = value end})
     end
     local aim = window:CreateTab("Aim")
-    toggle(aim, "Enable aim (hold aim key)", "Aim")
+    toggle(aim, "Aimbot", "Aim", "Aim")
+    toggle(aim, "Always on (no hold required)", "AimAlways")
     toggle(aim, "Team check", "TeamCheck")
     toggle(aim, "Wall check", "WallCheck")
     slider(aim, "Aim radius (pixels)", "Radius", 20, 600)
@@ -292,15 +465,22 @@ local guiOK, guiError = pcall(function()
             end
         end})
     local combat = window:CreateTab("Trigger & Hitboxes")
-    toggle(combat, "Triggerbot", "Trigger")
+    toggle(combat, "Triggerbot", "Trigger", "Trigger")
+    triggerStatus = combat:CreateLabel("Trigger: off")
+    combat:CreateDropdown({Name = "Fire method", Options = {"Auto", "Mouse", "Tool"},
+        CurrentOption = {Config.TriggerMode}, Flag = "HD_TriggerMode",
+        Callback = function(options) releaseFire(); Config.TriggerMode = options[1] end})
+    combat:CreateDropdown({Name = "Crosshair position", Options = {"Auto", "Center", "Cursor"},
+        CurrentOption = {Config.TriggerPoint}, Flag = "HD_TriggerPoint",
+        Callback = function(options) Config.TriggerPoint = options[1] end})
     slider(combat, "Trigger delay (seconds)", "TriggerDelay", 0, 1, 0.01)
     slider(combat, "Shot interval (seconds)", "FireInterval", 0.05, 1, 0.01)
-    toggle(combat, "Expand enemy root hitboxes", "Hitboxes")
+    toggle(combat, "Expand enemy root hitboxes", "Hitboxes", "Hitboxes")
     slider(combat, "Hitbox size (studs)", "HitboxSize", 2, 20)
     slider(combat, "Trigger / hitbox range (studs)", "MaxDistance", 50, 5000, 50)
-    combat:CreateParagraph({Title = "Compatibility", Content = "Triggerbot activates equipped Tools. Hitbox changes are local and may not affect server-validated weapons."})
+    combat:CreateParagraph({Title = "Trigger troubleshooting", Content = "Hide the menu to fire. Auto prefers mouse input; try Tool if mouse input is unavailable. If your gun uses a fixed crosshair, choose Center. Status shows detected targets and input attempts, not confirmed damage."})
     local esp = window:CreateTab("ESP")
-    toggle(esp, "Enable ESP", "Highlights")
+    toggle(esp, "Enable ESP", "Highlights", "ESP")
     toggle(esp, "Enemy only", "ESPTeamCheck")
     toggle(esp, "Show through walls (highlight and labels)", "ESPThroughWalls")
     toggle(esp, "Names", "ESPNames")
@@ -314,33 +494,14 @@ local guiOK, guiError = pcall(function()
     toggle(visuals, "Fullbright", "Fullbright")
     toggle(visuals, "Override camera FOV", "CameraOverride")
     slider(visuals, "Camera FOV", "CameraFOV", 40, 120)
-    local binds = window:CreateTab("Keybinds")
-    binds:CreateParagraph({Title = "Controls", Content = "K shows or hides the menu by default; change it in Rayfield's built-in settings (gear). Aim defaults to RMB. Choose Keyboard to use your saved aim key. Avoid assigning the same key to multiple actions."})
-    local keyboardAim = Enum.KeyCode.E
-    local aimMode = "RMB"
-    local function applyAimKey()
-        keys.Aim = aimMode == "RMB" and Enum.UserInputType.MouseButton2 or keyboardAim
-        Aimbot.Settings.TriggerKey = keys.Aim
-    end
-    binds:CreateDropdown({Name = "Aim input", Options = {"RMB", "Keyboard"}, CurrentOption = {"RMB"}, Flag = "HD_AimMode",
-        Callback = function(options) aimMode = options[1]; applyAimKey() end})
-    binds:CreateKeybind({Name = "Keyboard aim key (hold)", CurrentKeybind = "E", HoldToInteract = false,
-        Flag = "HD_AimKey", CallOnChange = true, Callback = function(value)
-            if typeof(value) == "EnumItem" and value.EnumType == Enum.KeyCode then keyboardAim = value
-            elseif type(value) == "string" and Enum.KeyCode[value] then keyboardAim = Enum.KeyCode[value] end
-            applyAimKey()
-        end})
-    for _, entry in ipairs({{"Trigger", "Triggerbot", "F6"}, {"Hitboxes", "Hitboxes", "F7"},
-        {"ESP", "ESP", "F8"}, {"Unload", "Unload", "End"}}) do
-        local action, name, default = entry[1], entry[2], entry[3]
-        binds:CreateKeybind({Name = name .. " key", CurrentKeybind = default, HoldToInteract = false,
-            Flag = "HD_Key_" .. action, CallOnChange = true, Callback = function(value)
-                if typeof(value) == "EnumItem" and value.EnumType == Enum.KeyCode then keys[action] = value
-                elseif type(value) == "string" and Enum.KeyCode[value] then keys[action] = Enum.KeyCode[value] end
-            end})
-    end
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v2", Content = "Settings save through Rayfield when file APIs are available. ESP refreshes at 10 Hz and follows respawns. Credits: Exunys (aimbot), Sirius (Rayfield)."})
+    settings:CreateParagraph({Title = "Home Defense v3", Content = "Click a key badge beside Aimbot, Triggerbot, Hitboxes, ESP, or Menu to rebind it. Escape cancels. Aim accepts RMB or a keyboard key. F1 is the default menu key. Always-on aim and trigger pause while the menu is open. Settings and keys save when file APIs are available."})
+    settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
+    attachKey("Hide / show menu", "Menu")
+    settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
+        HoldToInteract = false, Flag = "HD_UnloadKey", Callback = function(value)
+            if type(value) == "string" and Enum.KeyCode[value] then keys.Unload = Enum.KeyCode[value] end
+        end})
     settings:CreateButton({Name = "Unload and restore changes", Callback = unload})
     Rayfield:LoadConfiguration()
 end)
