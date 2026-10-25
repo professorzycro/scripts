@@ -36,6 +36,22 @@ local LocalPlayer = Players.LocalPlayer
 local connections, originals, highlights = {}, {}, {}
 local Rayfield, uiToggles
 local configControls, keyControls = {}, {}
+local espFolder
+local function destroyESP(visual)
+    for _,name in ipairs({"Highlight","Tag","Box"}) do
+        if visual[name] then pcall(function() visual[name]:Destroy() end) end
+    end
+end
+local function clearESP()
+    for player,visual in pairs(highlights) do destroyESP(visual); highlights[player]=nil end
+end
+local function ensureESPFolder()
+    if not espFolder or not espFolder.Parent then
+        espFolder=Instance.new("Folder")
+        espFolder.Name,espFolder.Parent="HomeDefenseESPObjects",workspace
+    end
+    return espFolder
+end
 local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
@@ -169,7 +185,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 15: starting..."
+bootText.Text = "Home Defense build 16: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -379,9 +395,8 @@ local function unload()
     pcall(function() RunService:UnbindFromRenderStep(recoilRenderName) end)
     if aimGui then aimGui:Destroy() end
     for part in pairs(originals) do restore(part) end
-    for _, visual in pairs(highlights) do
-        visual.Highlight:Destroy(); visual.Tag:Destroy(); visual.Box:Destroy()
-    end
+    clearESP()
+    if espFolder then espFolder:Destroy() end
     for property, value in pairs(lightingOriginals) do Lighting[property] = value end
     for camera, value in pairs(cameraOriginals) do
         pcall(function() camera.FieldOfView = value end)
@@ -696,21 +711,38 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
                 end
             end
         end
-        local espRange = root and camera and (root.Position - camera.CFrame.Position).Magnitude <= Config.ESPDistanceLimit
+        -- ESP can show a partially streamed character without its root, and does
+        -- not inherit the targeting system's terminal corpse latch on a reused rig.
+        local espCharacter = not isSelfPlayer(player) and player.Character
+        local espHumanoid = espCharacter and espCharacter:FindFirstChildOfClass("Humanoid")
+        if espHumanoid and (espHumanoid.Health<=0 or espHumanoid:GetState()==Enum.HumanoidStateType.Dead) then espCharacter=nil end
+        local espAnchor = espCharacter and (espCharacter:FindFirstChild("Head") or espCharacter:FindFirstChild("HumanoidRootPart")
+            or espCharacter:FindFirstChild("UpperTorso") or espCharacter:FindFirstChild("Torso") or espCharacter.PrimaryPart)
+        local espRange = espAnchor and espAnchor:IsA("BasePart") and camera
+            and (espAnchor.Position - camera.CFrame.Position).Magnitude <= Config.ESPDistanceLimit
         if espRange and Config.Highlights and (not Config.ESPTeamCheck or enemy(player)) then
+            local character,root = espCharacter,espAnchor
             keepHighlights[player] = true
             local visual = highlights[player]
+            local folder=ensureESPFolder()
+            local currentPlayerGui=LocalPlayer:FindFirstChildOfClass("PlayerGui") or playerGui
+            if visual and (visual.Character~=character or visual.Highlight.Parent~=folder
+                or visual.Box.Parent~=folder or visual.Tag.Parent~=currentPlayerGui or not visual.Label.Parent) then
+                destroyESP(visual);highlights[player]=nil;visual=nil
+            end
             if not visual then
                 local highlight = Instance.new("Highlight")
                 highlight.Name = "HomeDefenseHighlight"
                 highlight.FillColor = Color3.fromRGB(255, 90, 80)
                 highlight.FillTransparency = 0.65
-                highlight.Parent = playerGui
+                highlight.Parent = folder
                 local tag = Instance.new("BillboardGui")
                 tag.Name = "HomeDefenseESP"
                 tag.Size = UDim2.fromOffset(230, 70)
                 tag.StudsOffsetWorldSpace = Vector3.new(0, 3.5, 0)
-                tag.Parent = playerGui
+                tag.ResetOnSpawn = false
+                tag.LightInfluence = 0
+                tag.Parent = currentPlayerGui
                 local label = Instance.new("TextLabel")
                 label.Size = UDim2.fromScale(1, 1)
                 label.BackgroundTransparency = 1
@@ -720,11 +752,13 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
                 local box = Instance.new("SelectionBox")
                 box.LineThickness = 0.025
                 box.SurfaceTransparency = 1
-                box.Parent = playerGui
-                visual = {Highlight = highlight, Tag = tag, Label = label, Box = box}
+                box.Parent = folder
+                visual = {Highlight = highlight, Tag = tag, Label = label, Box = box, Character=character}
                 highlights[player] = visual
             end
-            local color = Config.ESPTeamColors and player.Team and player.TeamColor.Color or Color3.fromRGB(255, 90, 80)
+            local color = Config.ESPTeamColors and player.Team and player.TeamColor and player.TeamColor.Color or Color3.fromRGB(255, 90, 80)
+            visual.Highlight.Enabled = true
+            visual.Tag.Enabled = true
             visual.Highlight.Adornee = character
             visual.Highlight.FillColor = color
             visual.Highlight.OutlineColor = color
@@ -735,7 +769,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
             visual.Label.TextColor3 = color
             visual.Label.TextSize = Config.ESPTextSize
             local lines = {}
-            if Config.ESPNames then table.insert(lines, player.DisplayName .. " (@" .. player.Name .. ")") end
+            if Config.ESPNames then table.insert(lines, (player.DisplayName or player.Name) .. " (@" .. player.Name .. ")") end
             local humanoid = character:FindFirstChildOfClass("Humanoid")
             if Config.ESPHealth and humanoid then
                 table.insert(lines, string.format("HP %d / %d", math.ceil(humanoid.Health), math.ceil(humanoid.MaxHealth)))
@@ -749,7 +783,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     for part in pairs(originals) do if not keepParts[part] then restore(part) end end
     for player, visual in pairs(highlights) do
         if not keepHighlights[player] then
-            visual.Highlight:Destroy(); visual.Tag:Destroy(); visual.Box:Destroy()
+            destroyESP(visual)
             highlights[player] = nil
         end
     end
@@ -1226,6 +1260,8 @@ local guiOK, guiError = pcall(function()
     toggle(esp, "Character boxes", "ESPBoxes")
     slider(esp, "ESP range (studs)", "ESPDistanceLimit", 50, 5000, 50)
     slider(esp, "Label size", "ESPTextSize", 10, 24)
+    esp:CreateButton({Name = "Refresh ESP visuals", Callback = clearESP})
+    esp:CreateParagraph({Title = "Visibility", Content = "Enemy only hides teammates; range and through-walls settings also affect visibility. Labels rebuild after respawns and streamed body parts use a head/torso fallback. Characters fully unloaded by Roblox streaming cannot be drawn until they load again."})
     local visuals = window:CreateTab("Visuals")
     toggle(visuals, "Treat breakable glass as passable", "IgnoreBreakableGlass")
     toggle(visuals, "Fullbright", "Fullbright")
@@ -1248,7 +1284,7 @@ local guiOK, guiError = pcall(function()
     settings:CreateButton({Name = "Save config now", Callback = function() saveSettings(true) end})
     settings:CreateButton({Name = "Load saved config", Callback = function() releaseFire(); aimLock=nil; loadSettings() end})
     settings:CreateButton({Name = "Reset and save defaults", Callback = function() releaseFire(); aimLock=nil; resetSettings() end})
-    settings:CreateParagraph({Title = "Home Defense v15", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    settings:CreateParagraph({Title = "Home Defense v16", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
     keyControls.Unload = settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
@@ -1259,9 +1295,9 @@ local guiOK, guiError = pcall(function()
     configReady = true
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 15: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Workspace config is available in Settings.")
+        bootMessage("Home Defense build 16: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Workspace config is available in Settings.")
     else
-        bootMessage("Home Defense build 15: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 16: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
