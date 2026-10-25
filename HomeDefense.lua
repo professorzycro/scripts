@@ -53,6 +53,8 @@ bootGui.Name = "HomeDefenseStartup"
 bootGui.ResetOnSpawn = false
 bootGui.DisplayOrder = 100000
 bootGui.Parent = playerGui
+-- Prefer the executor UI layer because some games replace PlayerGui contents.
+pcall(function() if gethui then bootGui.Parent = gethui() end end)
 local bootText = Instance.new("TextLabel")
 bootText.Size = UDim2.new(0.8, 0, 0, 70)
 bootText.Position = UDim2.new(0.1, 0, 0, 15)
@@ -62,11 +64,25 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense: starting..."
+bootText.Text = "Home Defense build 5: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
     print(message)
+end
+local function bounded(label, seconds, callback)
+    local done, success, value = false, false, nil
+    local thread = task.spawn(function()
+        success, value = pcall(callback)
+        done = true
+    end)
+    local deadline = os.clock() + seconds
+    while not done and os.clock() < deadline do task.wait(0.05) end
+    if not done then
+        if task.cancel then pcall(task.cancel, thread) end
+        return false, label .. " timed out after " .. seconds .. " seconds"
+    end
+    return success, value
 end
 local active, aimedAt, aimedSince, lastShot = true, nil, 0, 0
 local originalSensitivity = Input.MouseDeltaSensitivity
@@ -119,7 +135,7 @@ end
 env.HomeDefenseHelper = {Config = Config, Unload = unload}
 
 bootMessage("Home Defense: loading aim support...")
-local ok, result = pcall(function()
+local ok, result = bounded("Aim loader", 10, function()
     assert(type(loadstring) == "function", "loadstring unavailable")
     assert(Drawing and Drawing.new, "Drawing API unavailable")
     local source = game:HttpGet("https://raw.githubusercontent.com/Exunys/Aimbot-V3/main/src/Aimbot.lua")
@@ -149,7 +165,7 @@ Aimbot.FOVSettings.Radius = Config.Radius
 Aimbot.ClosestPlayerTracer.Enabled = false
 -- Use our single-shot trigger loop so delayed callbacks cannot pile up.
 Aimbot.Triggerbot.Enabled = false
-local loaded, loadError = pcall(function() Aimbot.Load() end)
+local loaded, loadError = bounded("Aim initialization", 5, function() Aimbot.Load() end)
 if not loaded then
     pcall(function() Aimbot:Exit() end)
     nativeAimbot = false
@@ -416,18 +432,163 @@ connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
         camera.CFrame = camera.CFrame:Lerp(goal, alpha)
     end
 end)
+-- Self-contained UI adapter used if Rayfield or its remote asset cannot load.
+local function fallbackLibrary(reason)
+    local library = {visible = true, Flags = {}, IsFallback = true}
+    local gui = Instance.new("ScreenGui")
+    gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "HomeDefenseFallback", false, 99999
+    gui.Parent = playerGui
+    pcall(function() if gethui then gui.Parent = gethui() end end)
+    local panel = Instance.new("Frame")
+    panel.Size, panel.Position = UDim2.fromScale(0.7, 0.75), UDim2.fromScale(0.15, 0.12)
+    panel.BackgroundColor3, panel.Parent = Color3.fromRGB(24, 25, 31), gui
+    local title = Instance.new("TextLabel")
+    title.Size, title.BackgroundTransparency = UDim2.new(1, -20, 0, 38), 1
+    title.Text, title.TextSize = "Home Defense - compatible menu | F1 hide/show", 18
+    title.TextColor3, title.Parent = Color3.new(1, 1, 1), panel
+    local tabs = Instance.new("ScrollingFrame")
+    tabs.Size, tabs.Position = UDim2.new(1, -16, 0, 36), UDim2.fromOffset(8, 40)
+    tabs.BackgroundTransparency, tabs.CanvasSize = 1, UDim2.fromOffset(0, 0)
+    tabs.AutomaticCanvasSize, tabs.ScrollBarThickness = Enum.AutomaticSize.X, 3
+    tabs.Parent = panel
+    local tabLayout = Instance.new("UIListLayout")
+    tabLayout.FillDirection, tabLayout.Padding = Enum.FillDirection.Horizontal, UDim.new(0, 4)
+    tabLayout.Parent = tabs
+    local bodies, index = {}, 0
+    function library:IsVisible() return self.visible end
+    function library:SetVisibility(value) self.visible = value; gui.Enabled = value end
+    function library:Destroy() gui:Destroy() end
+    function library:Notify(data) bootMessage(data.Title .. ": " .. data.Content) end
+    function library:LoadConfiguration() end
+    function library:CreateWindow()
+        return {CreateTab = function(_, name)
+            index = index + 1
+            local body = Instance.new("ScrollingFrame")
+            body.Size, body.Position = UDim2.new(1, -16, 1, -90), UDim2.fromOffset(8, 82)
+            body.BackgroundTransparency, body.ScrollBarThickness = 1, 5
+            body.CanvasSize, body.AutomaticCanvasSize = UDim2.fromOffset(0, 0), Enum.AutomaticSize.Y
+            body.Visible, body.Parent = index == 1, panel
+            table.insert(bodies, body)
+            local layout = Instance.new("UIListLayout")
+            layout.SortOrder, layout.Padding, layout.Parent = Enum.SortOrder.LayoutOrder, UDim.new(0, 5), body
+            local tabButton = Instance.new("TextButton")
+            tabButton.Size, tabButton.Text = UDim2.fromOffset(140, 30), name
+            tabButton.BackgroundColor3, tabButton.TextColor3 = Color3.fromRGB(50, 52, 64), Color3.new(1, 1, 1)
+            tabButton.Parent = tabs
+            connections[#connections + 1] = tabButton.MouseButton1Click:Connect(function()
+                for _, other in ipairs(bodies) do other.Visible = other == body end
+            end)
+            local order = 0
+            local function row(name)
+                order = order + 1
+                local frame = Instance.new("Frame")
+                frame.Name, frame.Size = name, UDim2.new(1, -8, 0, 44)
+                frame.LayoutOrder, frame.BackgroundColor3 = order, Color3.fromRGB(36, 38, 47)
+                frame.Parent = body
+                local label = Instance.new("TextLabel")
+                label.Name, label.Text = "Title", name
+                label.Size, label.Position = UDim2.new(1, -180, 1, 0), UDim2.fromOffset(10, 0)
+                label.BackgroundTransparency, label.TextSize = 1, 14
+                label.TextXAlignment, label.TextColor3 = Enum.TextXAlignment.Left, Color3.new(1, 1, 1)
+                label.TextWrapped, label.Parent = true, frame
+                return frame
+            end
+            local function button(parent, text, width)
+                local item = Instance.new("TextButton")
+                item.Size, item.Position = UDim2.fromOffset(width or 150, 30), UDim2.new(1, -(width or 150) - 10, 0.5, -15)
+                item.Text, item.TextSize = text, 13
+                item.TextColor3, item.BackgroundColor3 = Color3.new(1, 1, 1), Color3.fromRGB(60, 63, 78)
+                item.Parent = parent
+                return item
+            end
+            local tab = {}
+            function tab:CreateToggle(settings)
+                local frame = row(settings.Name)
+                local switch = button(frame, "", 48)
+                switch.Name = "Switch"
+                local control = {}
+                function control:Set(value)
+                    settings.CurrentValue = value
+                    switch.Text = value and "ON" or "OFF"
+                    settings.Callback(value)
+                end
+                switch.Text = settings.CurrentValue and "ON" or "OFF"
+                connections[#connections + 1] = switch.MouseButton1Click:Connect(function() control:Set(not settings.CurrentValue) end)
+                return control
+            end
+            function tab:CreateButton(settings)
+                local frame = row(settings.Name)
+                local press = button(frame, "Run", 60)
+                connections[#connections + 1] = press.MouseButton1Click:Connect(settings.Callback)
+                return {}
+            end
+            function tab:CreateSlider(settings)
+                local frame = row(settings.Name)
+                local input = Instance.new("TextBox")
+                input.Size, input.Position = UDim2.fromOffset(100, 30), UDim2.new(1, -110, 0.5, -15)
+                input.Text, input.TextSize = tostring(settings.CurrentValue), 14
+                input.TextColor3, input.BackgroundColor3 = Color3.new(1, 1, 1), Color3.fromRGB(60, 63, 78)
+                input.Parent = frame
+                connections[#connections + 1] = input.FocusLost:Connect(function()
+                    local value = tonumber(input.Text)
+                    if value then
+                        value = math.clamp(value, settings.Range[1], settings.Range[2])
+                        settings.CurrentValue = value; settings.Callback(value)
+                    end
+                    input.Text = tostring(settings.CurrentValue)
+                end)
+            end
+            function tab:CreateDropdown(settings)
+                local frame = row(settings.Name)
+                local current = 1
+                for i, value in ipairs(settings.Options) do if value == settings.CurrentOption[1] then current = i end end
+                local select = button(frame, settings.Options[current] .. " >")
+                connections[#connections + 1] = select.MouseButton1Click:Connect(function()
+                    current = current % #settings.Options + 1
+                    select.Text = settings.Options[current] .. " >"
+                    settings.Callback({settings.Options[current]})
+                end)
+            end
+            function tab:CreateLabel(text)
+                local frame = row(text)
+                frame.Title.Size = UDim2.new(1, -20, 1, 0)
+                return {Set = function(_, value) frame.Title.Text = value end}
+            end
+            function tab:CreateParagraph(settings)
+                local frame = row(settings.Title)
+                frame.Size = UDim2.new(1, -8, 0, 96)
+                frame.Title.Size = UDim2.new(1, -20, 1, 0)
+                frame.Title.Text = settings.Title .. "\n" .. settings.Content
+            end
+            function tab:CreateKeybind(settings)
+                self:CreateLabel(settings.Name .. ": " .. settings.CurrentKeybind)
+            end
+            return tab
+        end}
+    end
+    bootMessage("Rayfield unavailable (" .. tostring(reason) .. "). Compatible menu ready.")
+    return library
+end
 -- Configuration flags are unique; saved Rayfield values flow through callbacks.
 local guiOK, guiError = pcall(function()
     bootMessage("Home Defense: loading Rayfield menu...")
-    Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
-    local window = Rayfield:CreateWindow({
+    local windowSettings = {
         Name = "Home Defense", LoadingTitle = "Home Defense", LoadingSubtitle = "professorzycro",
         Theme = "Default", ShowText = "Home Defense", DisableRayfieldPrompts = true,
         -- Our handler supports rebinding the menu without rebuilding the window.
         ToggleUIKeybind = Enum.KeyCode.F15,
         ConfigurationSaving = {Enabled = true, FolderName = "ProfessorZycro", FileName = "HomeDefense-v2"},
         Discord = {Enabled = false}, KeySystem = false,
-    })
+    }
+    local menuOK, window = bounded("Rayfield startup", 15, function()
+        Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+        return Rayfield:CreateWindow(windowSettings)
+    end)
+    if not menuOK then
+        if Rayfield then pcall(function() Rayfield:Destroy() end) end
+        Rayfield = fallbackLibrary(window)
+        window = Rayfield:CreateWindow(windowSettings)
+    end
     if not active then Rayfield:Destroy(); return end
     uiToggles = {}
     local function attachKey(name, action)
@@ -551,7 +712,11 @@ local guiOK, guiError = pcall(function()
     settings:CreateButton({Name = "Unload and restore changes", Callback = unload})
     Rayfield:LoadConfiguration()
     Rayfield:SetVisibility(true)
-    bootMessage("Home Defense loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active (Drawing unavailable)."))
+    if Rayfield.IsFallback then
+        bootMessage("Home Defense build 5: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+    else
+        bootMessage("Home Defense build 5: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+    end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
 if not guiOK then
