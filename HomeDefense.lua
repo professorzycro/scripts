@@ -2,7 +2,7 @@
 -- Aimbot credit: Exunys https://github.com/Exunys/Aimbot-V3 (CC0-1.0).
 -- Generic player-character support; not tested against this game's weapons.
 -- Rayfield credit: Sirius https://docs.sirius.menu/rayfield
--- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | F1 menu | F4 recoil | F3 retaliate
+-- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | F1 menu | F4 recoil
 local env = getgenv()
 if env.HomeDefenseHelper then pcall(env.HomeDefenseHelper.Unload) end
 
@@ -15,7 +15,7 @@ local Config = {
     TriggerMode = "Auto", TriggerPoint = "Auto", TriggerPattern = "Pulse", TriggerPressTime = 0.04,
     IgnoreBreakableGlass = true,
     TriggerIgnoreEffects = true,
-    Hitboxes = false, HitboxSize = 6, HitboxPart = "Head", HitboxTransparency = 0.75,
+    Hitboxes = false, HitboxSize = 6, HitboxPart = "Head", HitboxTransparency = 0.75, HitboxDistance = 1500,
     HitboxWallCheck = true, Highlights = false,
     MaxDistance = 1500, ShowFOV = true, Tracer = false,
     ESPNames = true, ESPHealth = true, ESPDistance = true, ESPTeamColors = true,
@@ -23,7 +23,6 @@ local Config = {
     ESPDistanceLimit = 1500, ESPTextSize = 14, Fullbright = false,
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
-    Retaliate = false, RetaliateDuration = 1.5,
     AutoSave = true,
 }
 local configDefaults = {}
@@ -56,7 +55,7 @@ local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
-    Menu = Enum.KeyCode.F1, Recoil = Enum.KeyCode.F4, Retaliate = Enum.KeyCode.F3}
+    Menu = Enum.KeyCode.F1, Recoil = Enum.KeyCode.F4}
 local HttpService = game:GetService("HttpService")
 local keyDefaults = {}
 for action, key in pairs(keys) do keyDefaults[action] = key.Name end
@@ -65,8 +64,8 @@ local configReady, configStatus, lastConfigSignature, nextConfigCheck = false, n
 local lastConfigMessage = "No saved workspace config loaded"
 local configRanges = {Radius={20,600},Smoothing={0,0.5},PredictionTime={0,0.25},TriggerDelay={0,1},
     FireInterval={0.03,1},TriggerPressTime={0.02,0.2},HitboxSize={2,20},HitboxTransparency={0,0.95},
-    MaxDistance={50,5000},ESPDistanceLimit={50,5000},ESPTextSize={10,24},CameraFOV={40,120},
-    RecoilStrength={0,100},RetaliateDuration={0.5,4}}
+    MaxDistance={50,5000},HitboxDistance={50,5000},ESPDistanceLimit={50,5000},ESPTextSize={10,24},CameraFOV={40,120},
+    RecoilStrength={0,100}}
 local configOptions = {AimOrigin={Auto=true,Center=true,Cursor=true},AimPart={Auto=true,Head=true,UpperTorso=true,HumanoidRootPart=true},
     TriggerMode={Auto=true,Mouse=true,Tool=true},TriggerPoint={Auto=true,Center=true,Cursor=true},
     TriggerPattern={Pulse=true,Hold=true},HitboxPart={Head=true,Torso=true,Both=true}}
@@ -91,6 +90,7 @@ local function applyConfig(snapshot)
     assert(type(snapshot)=="table" and snapshot.Version==1 and type(snapshot.Settings)=="table", "Unsupported config format")
     for name,default in pairs(configDefaults) do
         local value=snapshot.Settings[name]
+        if name=="HitboxDistance" and value==nil then value=snapshot.Settings.MaxDistance end
         if type(value)==type(default) then
             if type(value)=="number" then
                 if value==value and math.abs(value)<1e8 then
@@ -126,25 +126,28 @@ local function applyConfig(snapshot)
     end
 end
 local function saveSettings(force)
-    if type(writefile)~="function" then configNote("Workspace saving unavailable in this executor"); return false end
+    if type(writefile)~="function" then configNote("File saving is unavailable"); return false end
     local signature=configSignature()
     if not force and signature==lastConfigSignature then return true end
     local ok,err=pcall(function()
         if makefolder and (not isfolder or not isfolder("ProfessorZycro")) then makefolder("ProfessorZycro") end
         writefile(configPath,HttpService:JSONEncode(configSnapshot()))
     end)
-    if ok then lastConfigSignature=signature; configNote("Saved: workspace/"..configPath)
-    else configNote("Save failed: "..tostring(err)) end
+    if ok then lastConfigSignature=signature; configNote("Saved to workspace")
+    else configNote("Save failed - check file access");warn("HomeDefense config save: "..tostring(err)) end
     return ok
 end
 local function loadSettings()
+    if type(readfile)~="function" then configNote("File loading is unavailable");return false end
+    if isfile then
+        local existsOK,exists=pcall(isfile,configPath)
+        if existsOK and not exists then configNote("No saved config yet");return false end
+    end
     local ok,err=pcall(function()
-        assert(type(readfile)=="function", "Workspace reading unavailable")
-        if isfile then assert(isfile(configPath), "No saved config file yet") end
         applyConfig(HttpService:JSONDecode(readfile(configPath)))
     end)
-    if ok then lastConfigSignature=configSignature(); configNote("Loaded: workspace/"..configPath)
-    else configNote("Load skipped: "..tostring(err)) end
+    if ok then lastConfigSignature=configSignature(); configNote("Loaded from workspace")
+    else configNote("Config could not be loaded");warn("HomeDefense config load: "..tostring(err)) end
     return ok
 end
 local function resetSettings()
@@ -185,7 +188,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 16: starting..."
+bootText.Text = "Home Defense build 17: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -249,15 +252,9 @@ end
 local deadHumanoids = setmetatable({}, {__mode = "k"})
 local watchedHumanoids = setmetatable({}, {__mode = "k"})
 local restore
-local onLocalDamage
-local retaliation = {Shots = {}, Player = nil, Character = nil, Until = 0, DamageAt = nil, NextBind = 0}
-local retaliateStatus
 local function markDead(character, humanoid)
     deadHumanoids[humanoid] = true
     if aimLock and aimLock.Character == character then aimLock = nil end
-    if character == LocalPlayer.Character or character == retaliation.Character then
-        retaliation.Player, retaliation.Character, retaliation.DamageAt = nil, nil, nil
-    end
     for part in pairs(originals) do if part:IsDescendantOf(character) then restore(part) end end
     if aimedCharacter == character or (aimedAt and aimedAt.Character == character) then
         aimedAt, aimedCharacter, aimedSince = nil, nil, 0
@@ -271,15 +268,9 @@ local function living(player)
     if not character or not humanoid then return nil end
     if not watchedHumanoids[humanoid] then
         watchedHumanoids[humanoid] = true
-        local previousHealth = humanoid.Health
         connections[#connections + 1] = humanoid.Died:Connect(function() markDead(character, humanoid) end)
         connections[#connections + 1] = humanoid.HealthChanged:Connect(function(health)
-            local lostHealth = health < previousHealth
-            previousHealth = health
             if health <= 0 then markDead(character, humanoid) end
-            if lostHealth and health > 0 and isSelfPlayer(player) and character == LocalPlayer.Character and onLocalDamage then
-                onLocalDamage(character)
-            end
         end)
         connections[#connections + 1] = humanoid.StateChanged:Connect(function(_, state)
             if state == Enum.HumanoidStateType.Dead then markDead(character, humanoid) end
@@ -289,89 +280,6 @@ local function living(player)
         markDead(character, humanoid)
     end
     return not deadHumanoids[humanoid] and character or nil
-end
-local function retaliationNote(message)
-    if retaliateStatus then retaliateStatus:Set("Retaliate: " .. message) end
-end
-local function selectRetaliation(now)
-    if not Config.Retaliate or not retaliation.DamageAt then return end
-    if now - retaliation.DamageAt < 0.05 then return end
-    if not living(LocalPlayer) or retaliation.DamageCharacter ~= LocalPlayer.Character then retaliation.DamageAt = nil; return end
-    local found, count = nil, 0
-    for key, shot in pairs(retaliation.Shots) do
-        if now - shot.Time > 0.75 then retaliation.Shots[key] = nil
-        elseif shot.Time >= retaliation.DamageAt - 0.6 and shot.Time <= retaliation.DamageAt + 0.15
-            and enemy(shot.Player) and living(shot.Player) == shot.Character then
-            found, count = shot, count + 1
-        end
-    end
-    if count == 1 then
-        retaliation.Player, retaliation.Character, retaliation.Until = found.Player, found.Character, now + Config.RetaliateDuration
-        retaliation.DamageAt = nil
-        aimLock = nil
-        retaliationNote("probable attacker: " .. found.Player.Name)
-    elseif count > 1 then
-        retaliation.DamageAt = nil
-        retaliationNote("ambiguous incoming shots; skipped")
-    elseif now - retaliation.DamageAt > 0.18 then
-        retaliation.DamageAt = nil
-        retaliationNote("damage source unknown; skipped")
-    end
-end
-onLocalDamage = function(character)
-    if not Config.Retaliate then return end
-    retaliation.DamageAt, retaliation.DamageCharacter = os.clock(), character
-end
-local function retaliationTarget(now)
-    if not Config.Retaliate or not retaliation.Player then return end
-    if now > retaliation.Until or not living(LocalPlayer) or not enemy(retaliation.Player)
-        or living(retaliation.Player) ~= retaliation.Character then
-        if aimLock and aimLock.Player == retaliation.Player then aimLock = nil end
-        retaliation.Player, retaliation.Character = nil, nil
-        return
-    end
-    return retaliation.Player
-end
-local function updateRetaliation(now)
-    if not Config.Retaliate then
-        retaliation.Player, retaliation.Character, retaliation.DamageAt, retaliation.Shots = nil, nil, nil, {}
-        return
-    end
-    living(LocalPlayer) -- Attach to the current Humanoid after each respawn.
-    for key, shot in pairs(retaliation.Shots) do if now - shot.Time > 0.75 then retaliation.Shots[key] = nil end end
-    if not retaliation.Remote and now >= retaliation.NextBind then
-        retaliation.NextBind = now + 2
-        local ok, remote = pcall(function()
-            local storage = game:GetService("ReplicatedStorage")
-            local engine = storage:FindFirstChild("ACS_Engine")
-            local events = engine and engine:FindFirstChild("Events")
-            return events and events:FindFirstChild("ServerBullet")
-        end)
-        if ok and remote and remote:IsA("RemoteEvent") then
-            retaliation.Remote = remote
-            connections[#connections + 1] = remote.OnClientEvent:Connect(function(shooter, origin, toward)
-                if not active or not Config.Retaliate or not shooter or not shooter:IsA("Player") or not enemy(shooter)
-                    or typeof(origin) ~= "Vector3" or typeof(toward) ~= "Vector3" then return end
-                local character = living(LocalPlayer)
-                local shooterCharacter = living(shooter)
-                if not character or not shooterCharacter then return end
-                local delta = toward - origin
-                if delta.Magnitude < 0.001 then return end
-                local direction, near = delta.Unit, false
-                for _, name in ipairs({"Head", "HumanoidRootPart"}) do
-                    local part = character:FindFirstChild(name)
-                    if part then
-                        local along = (part.Position - origin):Dot(direction)
-                        if along >= 0 and along <= Config.MaxDistance
-                            and (part.Position - (origin + direction * along)).Magnitude <= 4 then near = true; break end
-                    end
-                end
-                if near then retaliation.Shots[shooter.UserId] = {Player = shooter, Character = shooterCharacter, Time = os.clock()} end
-            end)
-            retaliationNote("listening; incoming path + health loss required")
-        else retaliationNote("ACS bullet signal unavailable") end
-    end
-    selectRetaliation(now)
 end
 restore = function(part)
     local old = originals[part]
@@ -506,7 +414,7 @@ local function triggerTarget()
     params.FilterDescendantsInstances = ignored
     -- ACS fires along the centered crosshair. Auto must not switch between
     -- cursor and center when ADS or camera distance changes mid-shot.
-    local centered = retaliationTarget(os.clock()) ~= nil or Config.TriggerPoint ~= "Cursor"
+    local centered = Config.TriggerPoint ~= "Cursor"
     local ray
     if centered then
         ray = camera:ViewportPointToRay(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -581,22 +489,18 @@ connections[#connections + 1] = Input.InputBegan:Connect(function(input, process
     if input.KeyCode == keys.Hitboxes then flip("Hitboxes") end
     if input.KeyCode == keys.ESP then flip("Highlights") end
     if input.KeyCode == keys.Recoil then flip("RecoilEnabled") end
-    if input.KeyCode == keys.Retaliate then flip("Retaliate") end
 end)
 
 local elapsed = 0
 connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     if not active then return end
     local now = os.clock()
-    updateRetaliation(now)
-    local retaliatingAt = retaliationTarget(now)
-    local fireRequested = Config.Trigger or retaliatingAt ~= nil
+    local fireRequested = Config.Trigger
     if releaseAt and now >= releaseAt then releaseFire(); releaseAt = nil end
     local blocked = capturingKey or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
     local equippedTool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
     local target, targetCharacter
     if fireRequested and equippedTool and not blocked then target, targetCharacter = triggerTarget() end
-    if retaliatingAt and (not target or target.UserId ~= retaliatingAt.UserId) then target, targetCharacter = nil, nil end
     if not fireRequested or blocked then
         releaseFire()
         status(Config.Trigger and "paused: hide menu to fire" or "off")
@@ -688,7 +592,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         local character = not isSelfPlayer(player) and living(player)
         local root = character and character:FindFirstChild("HumanoidRootPart")
         local camera = workspace.CurrentCamera
-        local inRange = root and camera and (root.Position - camera.CFrame.Position).Magnitude <= Config.MaxDistance
+        local inRange = root and camera and (root.Position - camera.CFrame.Position).Magnitude <= Config.HitboxDistance
         if inRange and enemy(player) and Config.Hitboxes then
             local parts = {}
             if Config.HitboxPart == "Head" or Config.HitboxPart == "Both" then
@@ -806,11 +710,10 @@ local function renderAim(dt)
     if not active then return end
     local camera = workspace.CurrentCamera
     if not camera then return end
-    local retaliatingAt = retaliationTarget(os.clock())
     local cursor = Input:GetMouseLocation()
     -- GUI and target projection both use viewport coordinates, with no top-bar inset.
     -- Always-on is centered even when an older saved setting says Cursor.
-    if retaliatingAt or Config.AimAlways or Config.AimOrigin == "Center" or (Config.AimOrigin == "Auto" and
+    if Config.AimAlways or Config.AimOrigin == "Center" or (Config.AimOrigin == "Auto" and
         Input.MouseBehavior == Enum.MouseBehavior.LockCenter) then
         cursor = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
     end
@@ -819,15 +722,15 @@ local function renderAim(dt)
     aimCircle.Size = UDim2.fromOffset(Config.Radius * 2, Config.Radius * 2)
     circleStroke.Color = Color3.new(1, 1, 1)
     tracer.Visible = false
-    if not Config.Aim and not retaliatingAt then aimLock = nil; return end
+    if not Config.Aim then aimLock = nil; return end
     if capturingKey or Input:GetFocusedTextBox() then aimLock = nil; return end
     if Config.PauseAimWithMenu and Rayfield and Rayfield:IsVisible() then aimLock = nil; return end
-    if not Config.AimAlways and not retaliatingAt then
+    if not Config.AimAlways then
         local held = keys.Aim.EnumType == Enum.UserInputType and Input:IsMouseButtonPressed(keys.Aim)
             or keys.Aim.EnumType == Enum.KeyCode and Input:IsKeyDown(keys.Aim)
         if not held then aimLock = nil; return end
     end
-    local function candidate(player, unrestricted)
+    local function candidate(player)
         local character = enemy(player) and living(player)
         if not character then return end
         local names = Config.AimPart == "Auto" and {"Head", "UpperTorso", "Torso", "HumanoidRootPart"}
@@ -837,9 +740,9 @@ local function renderAim(dt)
             if part then
             local point, visible = camera:WorldToViewportPoint(part.Position)
             local screenDistance = (Vector2.new(point.X, point.Y) - cursor).Magnitude
-            if unrestricted or (visible and screenDistance <= Config.Radius) then
+            if visible and screenDistance <= Config.Radius then
                 local clear = true
-                if Config.WallCheck or unrestricted then
+                if Config.WallCheck then
                     local params = RaycastParams.new()
                     params.FilterType = Enum.RaycastFilterType.Exclude
                     local ignored = localIgnoreList(camera)
@@ -865,11 +768,10 @@ local function renderAim(dt)
         end
     end
     local selected
-    if retaliatingAt then selected = candidate(retaliatingAt, true)
-    elseif Config.StickyAim and aimLock and aimLock.Player.Character == aimLock.Character then
+    if Config.StickyAim and aimLock and aimLock.Player.Character == aimLock.Character then
         selected = candidate(aimLock.Player)
     end
-    if not selected and not retaliatingAt then
+    if not selected then
         for _, player in ipairs(Players:GetPlayers()) do
             local option = candidate(player)
             if option and (not selected or option.Distance < selected.Distance) then selected = option end
@@ -1076,6 +978,9 @@ local function fallbackLibrary(reason)
                 frame.Title.Size = UDim2.new(1, -20, 1, 0)
                 frame.Title.Text = settings.Title .. "\n" .. settings.Content
             end
+            function tab:CreateSection(name)
+                return self:CreateLabel(name)
+            end
             function tab:CreateKeybind(settings)
                 local label = self:CreateLabel(settings.Name .. ": " .. settings.CurrentKeybind)
                 return {Set=function(_,value)
@@ -1178,126 +1083,135 @@ local guiOK, guiError = pcall(function()
         configControls[property] = control
         return control
     end
-    local aim = window:CreateTab("Aim")
-    toggle(aim, "Aimbot", "Aim", "Aim")
-    toggle(aim, "Always on (no hold required)", "AimAlways")
-    toggle(aim, "Keep current target while valid", "StickyAim")
-    toggle(aim, "Pause aim while menu open", "PauseAimWithMenu")
-    configControls.AimOrigin = aim:CreateDropdown({Name = "Aim circle position", Options = {"Auto", "Center", "Cursor"},
-        CurrentOption = {Config.AimOrigin}, Flag = "HD_AimOrigin",
-        Callback = function(options) Config.AimOrigin = options[1] end})
-    toggle(aim, "Team check", "TeamCheck")
-    toggle(aim, "Wall check", "WallCheck")
-    toggle(aim, "Skip non-collidable effects", "AimIgnoreEffects")
-    local radiusControl = slider(aim, "Aim radius (pixels)", "Radius", 20, 600)
-    local smoothingControl = slider(aim, "Smoothing (seconds)", "Smoothing", 0, 0.5, 0.01)
-    toggle(aim, "Show aim circle", "ShowFOV")
-    toggle(aim, "Target tracer", "Tracer")
-    local aimPartControl = aim:CreateDropdown({Name = "Aim part", Options = {"Auto", "Head", "UpperTorso", "HumanoidRootPart"},
-        CurrentOption = {Config.AimPart}, Flag = "HD_AimPart",
-        Callback = function(options)
-            if Config.AimPart ~= options[1] then
-                Config.AimPart = options[1]
-                Aimbot.Settings.LockPart = Config.AimPart
-                Input.MouseDeltaSensitivity = originalSensitivity
-                Aimbot.Restart()
-            end
-        end})
-    configControls.AimPart = aimPartControl
-    toggle(aim, "Movement prediction", "AimPrediction")
-    slider(aim, "Prediction lead (seconds)", "PredictionTime", 0, 0.25, 0.01)
-    aim:CreateButton({Name = "Apply responsive aim preset", Callback = function()
-        Config.Aim, Config.StickyAim, Config.AimPart = true, true, "Auto"
-        Config.Radius, Config.Smoothing = 180, 0.03
-        aimLock = nil
-        if uiToggles.Aim then uiToggles.Aim:Set(true) end
-        if uiToggles.StickyAim then uiToggles.StickyAim:Set(true) end
-        if radiusControl then radiusControl:Set(180) end
-        if smoothingControl then smoothingControl:Set(0.03) end
-        if aimPartControl then aimPartControl:Set({"Auto"}) end
+
+    local function dropdown(tab,name,property,options,onChange)
+        local control=tab:CreateDropdown({Name=name,Options=options,CurrentOption={Config[property]},Flag="HD_"..property,
+            Callback=function(values)
+                Config[property]=values[1]
+                if onChange then onChange() end
+            end})
+        configControls[property]=control
+        return control
+    end
+    local function setControl(property,value)
+        Config[property]=value
+        local control=configControls[property]
+        if control then control:Set(type(value)=="string" and {value} or value) end
+    end
+    local aim=window:CreateTab("Aim")
+    aim:CreateSection("Activation")
+    toggle(aim,"Aimbot","Aim","Aim")
+    toggle(aim,"Always on","AimAlways")
+    toggle(aim,"Pause while menu is open","PauseAimWithMenu")
+    aim:CreateSection("Target selection")
+    dropdown(aim,"Target part","AimPart",{"Auto","Head","UpperTorso","HumanoidRootPart"},function() aimLock=nil end)
+    toggle(aim,"Keep current target","StickyAim")
+    toggle(aim,"Ignore teammates","TeamCheck")
+    toggle(aim,"Wall check","WallCheck")
+    toggle(aim,"Ignore non-collidable effects","AimIgnoreEffects")
+    aim:CreateSection("Aim circle")
+    toggle(aim,"Show circle","ShowFOV")
+    slider(aim,"Radius (pixels)","Radius",20,600)
+    dropdown(aim,"Circle position","AimOrigin",{"Auto","Center","Cursor"})
+    toggle(aim,"Show target line","Tracer")
+    aim:CreateSection("Response")
+    slider(aim,"Smoothing (seconds)","Smoothing",0,0.5,0.01)
+    toggle(aim,"Movement prediction","AimPrediction")
+    slider(aim,"Prediction lead (seconds)","PredictionTime",0,0.25,0.01)
+    aim:CreateButton({Name="Apply responsive preset",Callback=function()
+        aimLock=nil
+        setControl("Aim",true);setControl("StickyAim",true);setControl("AimPart","Auto")
+        setControl("Radius",180);setControl("Smoothing",0.03)
     end})
-    aim:CreateParagraph({Title = "Tracking", Content = "Auto prefers a visible head, then torso/root. Target retention ends on death, obstruction, team change or leaving the circle. Lower smoothing responds faster; zero snaps. Prediction is optional fixed-time movement lead, not a weapon-specific ballistic solution."})
-    local combat = window:CreateTab("Trigger & Hitboxes")
-    toggle(combat, "Triggerbot", "Trigger", "Trigger")
-    toggle(combat, "Skip non-collidable effects", "TriggerIgnoreEffects")
-    triggerStatus = combat:CreateLabel("Trigger: off")
-    configControls.TriggerMode = combat:CreateDropdown({Name = "Fire method", Options = {"Auto", "Mouse", "Tool"},
-        CurrentOption = {Config.TriggerMode}, Flag = "HD_TriggerMode",
-        Callback = function(options) releaseFire(); Config.TriggerMode = options[1] end})
-    configControls.TriggerPoint = combat:CreateDropdown({Name = "Crosshair position", Options = {"Auto", "Center", "Cursor"},
-        CurrentOption = {Config.TriggerPoint}, Flag = "HD_TriggerPoint",
-        Callback = function(options) Config.TriggerPoint = options[1] end})
-    configControls.TriggerPattern = combat:CreateDropdown({Name = "Firing pattern", Options = {"Pulse", "Hold"},
-        CurrentOption = {Config.TriggerPattern}, Flag = "HD_TriggerPattern",
-        Callback = function(options) releaseFire(); releaseAt = nil; Config.TriggerPattern = options[1] end})
-    slider(combat, "Mouse press length (seconds)", "TriggerPressTime", 0.02, 0.2, 0.01)
-    local delayControl = slider(combat, "Trigger delay (seconds)", "TriggerDelay", 0, 1, 0.01)
-    local intervalControl = slider(combat, "Shot interval (seconds)", "FireInterval", 0.03, 1, 0.01)
-    combat:CreateButton({Name = "Apply fast trigger preset", Callback = function()
-        Config.TriggerDelay, Config.FireInterval = 0, 0.06
-        if delayControl then delayControl:Set(0) end
-        if intervalControl then intervalControl:Set(0.06) end
-        aimedAt, aimedSince, lastShot = nil, 0, 0
+    aim:CreateParagraph({Title="Quick guide",Content="Always on stays centered. Auto selects a visible head or torso. Lower smoothing is faster; zero snaps. Prediction adds fixed-time movement lead."})
+
+    local trigger=window:CreateTab("Triggerbot")
+    trigger:CreateSection("Activation")
+    toggle(trigger,"Triggerbot","Trigger","Trigger")
+    triggerStatus=trigger:CreateLabel("Trigger: off")
+    trigger:CreateSection("Firing")
+    dropdown(trigger,"Input method","TriggerMode",{"Auto","Mouse","Tool"},releaseFire)
+    dropdown(trigger,"Crosshair","TriggerPoint",{"Auto","Center","Cursor"})
+    dropdown(trigger,"Firing pattern","TriggerPattern",{"Pulse","Hold"},function() releaseFire();releaseAt=nil end)
+    slider(trigger,"Maximum range (studs)","MaxDistance",50,5000,50)
+    trigger:CreateSection("Timing")
+    slider(trigger,"Reaction delay (seconds)","TriggerDelay",0,1,0.01)
+    slider(trigger,"Shot interval (seconds)","FireInterval",0.03,1,0.01)
+    slider(trigger,"Press length (seconds)","TriggerPressTime",0.02,0.2,0.01)
+    trigger:CreateButton({Name="Apply fast trigger preset",Callback=function()
+        setControl("TriggerDelay",0);setControl("FireInterval",0.06)
+        aimedAt,aimedCharacter,aimedSince,lastShot=nil,nil,0,0
     end})
-    toggle(combat, "Expand enemy hitboxes", "Hitboxes", "Hitboxes")
-    toggle(combat, "Hitbox wall check", "HitboxWallCheck")
-    configControls.HitboxPart = combat:CreateDropdown({Name = "Expand body part", Options = {"Head", "Torso", "Both"},
-        CurrentOption = {Config.HitboxPart}, Flag = "HD_HitboxPart",
-        Callback = function(options) Config.HitboxPart = options[1] end})
-    slider(combat, "Hitbox size (studs)", "HitboxSize", 2, 20)
-    slider(combat, "Expanded part transparency", "HitboxTransparency", 0, 0.95, 0.05)
-    combat:CreateParagraph({Title = "Hitbox compatibility", Content = "Expands recognized Head/Torso parts and enables ray queries. Collision settings stay original. Resets on death, team/range changes, disable or unload. Client-side geometry changes may still be rejected by server hit validation."})
-    slider(combat, "Trigger / hitbox range (studs)", "MaxDistance", 50, 5000, 50)
-    combat:CreateParagraph({Title = "Trigger troubleshooting", Content = "Auto crosshair uses screen center for ACS. Choose Hold for automatic weapons; Pulse for semi-auto. Hide the menu and equip a weapon. Auto prefers mouse input; Tool is a fallback. Status reports detection/input attempts, not confirmed damage."})
-    local esp = window:CreateTab("ESP")
-    toggle(esp, "Enable ESP", "Highlights", "ESP")
-    toggle(esp, "Enemy only", "ESPTeamCheck")
-    toggle(esp, "Show through walls (highlight and labels)", "ESPThroughWalls")
-    toggle(esp, "Names", "ESPNames")
-    toggle(esp, "Health", "ESPHealth")
-    toggle(esp, "Distance", "ESPDistance")
-    toggle(esp, "Team colors", "ESPTeamColors")
-    toggle(esp, "Character boxes", "ESPBoxes")
-    slider(esp, "ESP range (studs)", "ESPDistanceLimit", 50, 5000, 50)
-    slider(esp, "Label size", "ESPTextSize", 10, 24)
-    esp:CreateButton({Name = "Refresh ESP visuals", Callback = clearESP})
-    esp:CreateParagraph({Title = "Visibility", Content = "Enemy only hides teammates; range and through-walls settings also affect visibility. Labels rebuild after respawns and streamed body parts use a head/torso fallback. Characters fully unloaded by Roblox streaming cannot be drawn until they load again."})
-    local visuals = window:CreateTab("Visuals")
-    toggle(visuals, "Treat breakable glass as passable", "IgnoreBreakableGlass")
-    toggle(visuals, "Fullbright", "Fullbright")
-    toggle(visuals, "Override camera FOV", "CameraOverride")
-    slider(visuals, "Camera FOV", "CameraFOV", 40, 120)
-    local recoilTab = window:CreateTab("Recoil")
-    toggle(recoilTab, "Recoil dampener", "RecoilEnabled", "Recoil")
-    slider(recoilTab, "Camera smoothing (%)", "RecoilStrength", 0, 100, 5)
-    recoilStatus = recoilTab:CreateLabel("Recoil: Off")
-    recoilTab:CreateParagraph({Title = "Camera-only dampener", Content = "Disabled by default. Smooths camera rotation while firing with the mouse stationary; pauses during mouse movement. Leaves weapon settings, animation recoil, spread and equip logic alone. Reloading restores the previous version's recoil settings."})
-    local retaliateTab = window:CreateTab("Retaliate")
-    toggle(retaliateTab, "Retaliate (best effort)", "Retaliate", "Retaliate")
-    slider(retaliateTab, "Retaliation tracking time (seconds)", "RetaliateDuration", 0.5, 4, 0.1)
-    retaliateStatus = retaliateTab:CreateLabel("Retaliate: Off")
-    retaliateTab:CreateParagraph({Title = "How attribution works", Content = "Turns aim toward a probable attacker after health loss and a recent incoming bullet path. Does not teleport. Fires only when the crosshair hits that attacker, with a weapon equipped. Respects teams, walls and death. Client signals do not confirm damage ownership: fall damage near gunfire can be misattributed; ambiguous or unknown sources are skipped. Hide the menu to allow firing."})
-    local settings = window:CreateTab("Settings")
-    toggle(settings, "Auto-save config to workspace", "AutoSave")
-    configStatus = settings:CreateLabel(lastConfigMessage)
-    settings:CreateParagraph({Title = "Workspace file", Content = "ProfessorZycro/HomeDefense-config.json inside your executor workspace. Includes feature settings and keybinds. Loads at startup and works in the compatible menu too."})
-    settings:CreateButton({Name = "Save config now", Callback = function() saveSettings(true) end})
-    settings:CreateButton({Name = "Load saved config", Callback = function() releaseFire(); aimLock=nil; loadSettings() end})
-    settings:CreateButton({Name = "Reset and save defaults", Callback = function() releaseFire(); aimLock=nil; resetSettings() end})
-    settings:CreateParagraph({Title = "Home Defense v16", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
-    settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
-    pcall(attachKey, "Hide / show menu", "Menu")
-    keyControls.Unload = settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
-        HoldToInteract = false, Flag = "HD_UnloadKey", Callback = function(value)
-            if type(value) == "string" and Enum.KeyCode[value] then keys.Unload = Enum.KeyCode[value] end
+    trigger:CreateSection("Detection")
+    toggle(trigger,"Ignore non-collidable effects","TriggerIgnoreEffects")
+    trigger:CreateParagraph({Title="Quick guide",Content="Equip a weapon and hide the menu. Hold suits automatic weapons; Pulse suits semi-auto. Auto crosshair uses screen center."})
+
+    local hitboxes=window:CreateTab("Hitboxes")
+    hitboxes:CreateSection("Activation")
+    toggle(hitboxes,"Hitbox expander","Hitboxes","Hitboxes")
+    hitboxes:CreateSection("Shape")
+    dropdown(hitboxes,"Body parts","HitboxPart",{"Head","Torso","Both"})
+    slider(hitboxes,"Size (studs)","HitboxSize",2,20)
+    slider(hitboxes,"Transparency","HitboxTransparency",0,0.95,0.05)
+    hitboxes:CreateSection("Visibility")
+    toggle(hitboxes,"Wall check","HitboxWallCheck")
+    slider(hitboxes,"Maximum range (studs)","HitboxDistance",50,5000,50)
+    hitboxes:CreateParagraph({Title="Compatibility",Content="Expands recognized body parts locally and restores them when disabled or dead. Server validation may still reject expanded hits."})
+
+    local esp=window:CreateTab("ESP")
+    esp:CreateSection("Activation")
+    toggle(esp,"Player ESP","Highlights","ESP")
+    esp:CreateSection("Visibility")
+    toggle(esp,"Enemy only","ESPTeamCheck")
+    toggle(esp,"Show through walls","ESPThroughWalls")
+    slider(esp,"Maximum range (studs)","ESPDistanceLimit",50,5000,50)
+    esp:CreateSection("Labels")
+    toggle(esp,"Names","ESPNames")
+    toggle(esp,"Health","ESPHealth")
+    toggle(esp,"Distance","ESPDistance")
+    slider(esp,"Text size","ESPTextSize",10,24)
+    esp:CreateSection("Appearance")
+    toggle(esp,"Team colors","ESPTeamColors")
+    toggle(esp,"Character boxes","ESPBoxes")
+    esp:CreateButton({Name="Refresh ESP",Callback=clearESP})
+
+    local visuals=window:CreateTab("Visuals")
+    visuals:CreateSection("Shared visibility")
+    toggle(visuals,"Ignore breakable glass","IgnoreBreakableGlass")
+    visuals:CreateSection("Lighting & camera")
+    toggle(visuals,"Fullbright","Fullbright")
+    toggle(visuals,"Override camera FOV","CameraOverride")
+    slider(visuals,"Camera FOV","CameraFOV",40,120)
+    visuals:CreateSection("Recoil")
+    toggle(visuals,"Camera recoil dampener","RecoilEnabled","Recoil")
+    slider(visuals,"Camera smoothing (%)","RecoilStrength",0,100,5)
+    recoilStatus=visuals:CreateLabel("Recoil: Off")
+    visuals:CreateParagraph({Title="Camera only",Content="Smooths stationary-mouse firing. Pauses during mouse movement and leaves weapon settings unchanged."})
+
+    local settings=window:CreateTab("Settings")
+    settings:CreateSection("Workspace config")
+    toggle(settings,"Auto-save","AutoSave")
+    configStatus=settings:CreateLabel(lastConfigMessage)
+    settings:CreateButton({Name="Save config",Callback=function() saveSettings(true) end})
+    settings:CreateButton({Name="Load config",Callback=function() releaseFire();aimLock=nil;loadSettings() end})
+    settings:CreateButton({Name="Reset to defaults",Callback=function() releaseFire();aimLock=nil;resetSettings() end})
+    settings:CreateParagraph({Title="Config file",Content="workspace/ProfessorZycro/HomeDefense-config.json\nIncludes settings and keybinds; loads at startup."})
+    settings:CreateSection("Controls")
+    settings:CreateButton({Name="Hide / show menu",Callback=function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
+    pcall(attachKey,"Hide / show menu","Menu")
+    keyControls.Unload=settings:CreateKeybind({Name="Unload key",CurrentKeybind=keys.Unload.Name,CallOnChange=true,
+        HoldToInteract=false,Flag="HD_UnloadKey",Callback=function(value)
+            if type(value)=="string" and Enum.KeyCode[value] then keys.Unload=Enum.KeyCode[value] end
         end})
-    settings:CreateButton({Name = "Unload and restore changes", Callback = unload})
+    settings:CreateParagraph({Title="Keybinds",Content="Click a key badge beside a feature to rebind it. Escape cancels. F1 shows/hides the menu by default."})
+    settings:CreateSection("Session")
+    settings:CreateButton({Name="Unload & restore changes",Callback=unload})
     configReady = true
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 16: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Workspace config is available in Settings.")
+        bootMessage("Home Defense build 17: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Workspace config is available in Settings.")
     else
-        bootMessage("Home Defense build 16: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 17: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
