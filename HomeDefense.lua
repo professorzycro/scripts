@@ -68,7 +68,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 10: starting..."
+bootText.Text = "Home Defense build 11: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -89,6 +89,7 @@ local function bounded(label, seconds, callback)
     return success, value
 end
 local active, aimedAt, aimedSince, lastShot = true, nil, 0, 0
+local aimedCharacter
 local originalSensitivity = Input.MouseDeltaSensitivity
 local function releaseFire()
     if fireHeld then pcall(function() mouse1release() end); fireHeld = false end
@@ -127,10 +128,34 @@ local function enemy(player)
         or LocalPlayer.Neutral or player.Neutral
         or LocalPlayer.Team == nil or player.Team ~= LocalPlayer.Team)
 end
+local deadHumanoids = setmetatable({}, {__mode = "k"})
+local watchedHumanoids = setmetatable({}, {__mode = "k"})
+local function markDead(character, humanoid)
+    deadHumanoids[humanoid] = true
+    if aimedCharacter == character or (aimedAt and aimedAt.Character == character) then
+        aimedAt, aimedCharacter, aimedSince = nil, nil, 0
+        releaseFire()
+        releaseAt = nil
+    end
+end
 local function living(player)
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    return character and humanoid and humanoid.Health > 0 and character
+    if not character or not humanoid then return nil end
+    if not watchedHumanoids[humanoid] then
+        watchedHumanoids[humanoid] = true
+        connections[#connections + 1] = humanoid.Died:Connect(function() markDead(character, humanoid) end)
+        connections[#connections + 1] = humanoid.HealthChanged:Connect(function(health)
+            if health <= 0 then markDead(character, humanoid) end
+        end)
+        connections[#connections + 1] = humanoid.StateChanged:Connect(function(_, state)
+            if state == Enum.HumanoidStateType.Dead then markDead(character, humanoid) end
+        end)
+    end
+    if humanoid.Health <= 0 or humanoid:GetState() == Enum.HumanoidStateType.Dead then
+        markDead(character, humanoid)
+    end
+    return not deadHumanoids[humanoid] and character or nil
 end
 local function restore(part)
     local old = originals[part]
@@ -258,9 +283,10 @@ local function triggerTarget()
             status("skipping your character")
         elseif player then
             if not enemy(player) then status("teammate: " .. player.Name); return end
-            if not living(player) then status("dead player: " .. player.Name); return end
+            local character = living(player)
+            if not character then status("dead player: " .. player.Name); return end
             status("player: " .. player.Name)
-            return player
+            return player, character
         -- Match the saved ACS ray's treatment of non-collidable effects.
         -- Solid geometry and Armor remain blockers regardless of transparency.
         elseif Config.TriggerIgnoreEffects and target:IsA("BasePart") and not target.CanCollide and target.Name ~= "Armor" then
@@ -324,7 +350,8 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     if releaseAt and now >= releaseAt then releaseFire(); releaseAt = nil end
     local blocked = capturingKey or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
     local equippedTool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
-    local target = Config.Trigger and equippedTool and not blocked and triggerTarget() or nil
+    local target, targetCharacter
+    if Config.Trigger and equippedTool and not blocked then target, targetCharacter = triggerTarget() end
     if not Config.Trigger or blocked then
         releaseFire()
         status(Config.Trigger and "paused: hide menu to fire" or "off")
@@ -332,13 +359,19 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         releaseFire()
         status("equip a weapon")
     end
-    if target ~= aimedAt then aimedAt, aimedSince = target, now end
+    if target ~= aimedAt or targetCharacter ~= aimedCharacter then
+        aimedAt, aimedCharacter, aimedSince = target, targetCharacter, now
+    end
     if target and isSelfPlayer(target) then
         target, aimedAt = nil, nil
         releaseFire()
         status("self-target rejected")
     end
-    if target and not isSelfPlayer(target) and enemy(target) and living(target)
+    if not target or living(target) ~= targetCharacter then
+        target, aimedAt, aimedCharacter = nil, nil, nil
+        releaseFire()
+    end
+    if target and not isSelfPlayer(target) and enemy(target) and living(target) == targetCharacter
         and now - aimedSince >= Config.TriggerDelay and now - lastShot >= Config.FireInterval then
         local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
         local mode = Config.TriggerMode
@@ -515,7 +548,7 @@ local function renderAim(dt)
             or keys.Aim.EnumType == Enum.KeyCode and Input:IsKeyDown(keys.Aim)
         if not held then aimMessage("hold " .. keys.Aim.Name .. " or enable Always on"); return end
     end
-    local closest, distance = nil, Config.Radius
+    local closest, closestPlayer, closestCharacter, distance = nil, nil, nil, Config.Radius
     local insideCircle, wallBlocked = 0, 0
     for _, player in ipairs(Players:GetPlayers()) do
         local character = enemy(player) and living(player)
@@ -544,10 +577,14 @@ local function renderAim(dt)
                         end
                     end
                 end
-                if clear then closest, distance = part, screenDistance else wallBlocked = wallBlocked + 1 end
+                if clear then
+                    closest, closestPlayer, closestCharacter, distance = part, player, character, screenDistance
+                else wallBlocked = wallBlocked + 1 end
             end
         end
     end
+    -- Recheck after selection so a death or respawn cannot leave a stale part locked.
+    if closest and living(closestPlayer) ~= closestCharacter then closest = nil end
     if closest then
         aimMessage((Config.AimAlways and "always on: " or "tracking: ") .. closest.Parent.Name)
         circleStroke.Color = Color3.fromRGB(255, 100, 100)
@@ -892,7 +929,7 @@ local guiOK, guiError = pcall(function()
     recoilStatus = recoilTab:CreateLabel("Recoil: Off")
     recoilTab:CreateParagraph({Title = "Camera-only dampener", Content = "Disabled by default. Smooths camera rotation while firing with the mouse stationary; pauses during mouse movement. Leaves weapon settings, animation recoil, spread and equip logic alone. Reloading restores the previous version's recoil settings."})
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v10", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    settings:CreateParagraph({Title = "Home Defense v11", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
     settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
@@ -906,9 +943,9 @@ local guiOK, guiError = pcall(function()
     if uiToggles.RecoilEnabled then uiToggles.RecoilEnabled:Set(false) end
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 10: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 11: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 10: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 11: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
