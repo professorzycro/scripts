@@ -1,10 +1,10 @@
--- Home Defense helper. Requires an executor supporting Exunys Aimbot V3.
+-- Home Defense helper. Uses compatible aim when Exunys/Drawing is unavailable.
 -- Aimbot credit: Exunys https://github.com/Exunys/Aimbot-V3 (CC0-1.0).
 -- Generic player-character support; not tested against this game's weapons.
 -- Rayfield credit: Sirius https://docs.sirius.menu/rayfield
 -- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | F1 menu
 local env = getgenv()
-if env.HomeDefenseHelper then env.HomeDefenseHelper.Unload() end
+if env.HomeDefenseHelper then pcall(env.HomeDefenseHelper.Unload) end
 
 local Config = {
     Aim = true, AimAlways = false, TeamCheck = true, WallCheck = true,
@@ -46,6 +46,28 @@ pcall(function()
 end)
 local lightingOriginals, cameraOriginals = {}, {}
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+local previousBoot = playerGui:FindFirstChild("HomeDefenseStartup")
+if previousBoot then previousBoot:Destroy() end
+local bootGui = Instance.new("ScreenGui")
+bootGui.Name = "HomeDefenseStartup"
+bootGui.ResetOnSpawn = false
+bootGui.DisplayOrder = 100000
+bootGui.Parent = playerGui
+local bootText = Instance.new("TextLabel")
+bootText.Size = UDim2.new(0.8, 0, 0, 70)
+bootText.Position = UDim2.new(0.1, 0, 0, 15)
+bootText.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+bootText.BackgroundTransparency = 0.1
+bootText.TextColor3 = Color3.new(1, 1, 1)
+bootText.Font = Enum.Font.Gotham
+bootText.TextSize = 16
+bootText.TextWrapped = true
+bootText.Text = "Home Defense: starting..."
+bootText.Parent = bootGui
+local function bootMessage(message)
+    if bootText.Parent then bootText.Text = message end
+    print(message)
+end
 local active, aimedAt, aimedSince, lastShot = true, nil, 0, 0
 local originalSensitivity = Input.MouseDeltaSensitivity
 local function releaseFire()
@@ -53,6 +75,7 @@ local function releaseFire()
     if heldTool then pcall(function() heldTool:Deactivate() end); heldTool = nil end
 end
 local Aimbot
+local nativeAimbot = false
 local function enemy(player)
     return player ~= LocalPlayer and (not Config.TeamCheck
         or LocalPlayer.Neutral or player.Neutral
@@ -90,10 +113,12 @@ local function unload()
     if Aimbot then pcall(function() Aimbot:Exit() end) end
     Input.MouseDeltaSensitivity = originalSensitivity
     if Rayfield then pcall(function() Rayfield:Destroy() end) end
+    bootGui:Destroy()
     env.HomeDefenseHelper = nil
 end
 env.HomeDefenseHelper = {Config = Config, Unload = unload}
 
+bootMessage("Home Defense: loading aim support...")
 local ok, result = pcall(function()
     assert(type(loadstring) == "function", "loadstring unavailable")
     assert(Drawing and Drawing.new, "Drawing API unavailable")
@@ -102,12 +127,16 @@ local ok, result = pcall(function()
     assert(chunk, err)
     return chunk()
 end)
-if not ok then
-    unload()
-    error("Aimbot failed to load: " .. tostring(result))
+if ok then Aimbot = result or env.ExunysDeveloperAimbot end
+if not ok or type(Aimbot) ~= "table" then
+    warn("HomeDefense: using compatible aim mode: " .. tostring(result))
+    local partial = env.ExunysDeveloperAimbot
+    if type(partial) == "table" and partial.Exit then pcall(function() partial:Exit() end) end
+    Aimbot = {Settings = {}, FOVSettings = {}, ClosestPlayerTracer = {}, Triggerbot = {},
+        Load = function() end, Exit = function() end, Restart = function() end}
+else
+    nativeAimbot = true
 end
-Aimbot = result or env.ExunysDeveloperAimbot
-if not Aimbot then unload(); error("Aimbot environment missing") end
 Aimbot.Settings.Enabled = Config.Aim
 Aimbot.Settings.AliveCheck = true
 Aimbot.Settings.TeamCheck = Config.TeamCheck
@@ -121,7 +150,12 @@ Aimbot.ClosestPlayerTracer.Enabled = false
 -- Use our single-shot trigger loop so delayed callbacks cannot pile up.
 Aimbot.Triggerbot.Enabled = false
 local loaded, loadError = pcall(function() Aimbot.Load() end)
-if not loaded then unload(); error(tostring(loadError)) end
+if not loaded then
+    pcall(function() Aimbot:Exit() end)
+    nativeAimbot = false
+    Aimbot.Load, Aimbot.Exit, Aimbot.Restart = function() end, function() end, function() end
+    warn("HomeDefense: compatible aim enabled: " .. tostring(loadError))
+end
 
 local mouse = LocalPlayer:GetMouse()
 local function status(message)
@@ -344,8 +378,13 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     end
 end)
 connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
-    if not active or not Config.Aim or not Config.AimAlways or capturingKey
+    if not active or not Config.Aim or (nativeAimbot and not Config.AimAlways) or capturingKey
         or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible()) then return end
+    if not Config.AimAlways then
+        local held = keys.Aim.EnumType == Enum.UserInputType and Input:IsMouseButtonPressed(keys.Aim)
+            or keys.Aim.EnumType == Enum.KeyCode and Input:IsKeyDown(keys.Aim)
+        if not held then return end
+    end
     local camera = workspace.CurrentCamera
     if not camera then return end
     local cursor = Input:GetMouseLocation()
@@ -379,12 +418,13 @@ connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
 end)
 -- Configuration flags are unique; saved Rayfield values flow through callbacks.
 local guiOK, guiError = pcall(function()
+    bootMessage("Home Defense: loading Rayfield menu...")
     Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
     local window = Rayfield:CreateWindow({
         Name = "Home Defense", LoadingTitle = "Home Defense", LoadingSubtitle = "professorzycro",
         Theme = "Default", ShowText = "Home Defense", DisableRayfieldPrompts = true,
         -- Our handler supports rebinding the menu without rebuilding the window.
-        ToggleUIKeybind = Enum.KeyCode.F24,
+        ToggleUIKeybind = Enum.KeyCode.F15,
         ConfigurationSaving = {Enabled = true, FolderName = "ProfessorZycro", FileName = "HomeDefense-v2"},
         Discord = {Enabled = false}, KeySystem = false,
     })
@@ -407,7 +447,10 @@ local guiOK, guiError = pcall(function()
             end)
             if row then break end
         end
-        if not row then error("Cannot attach inline key control: " .. name) end
+        if not row then
+            warn("HomeDefense: inline key row unavailable: " .. name)
+            return false
+        end
         local button = Instance.new("TextButton")
         button.Name = "InlineKeybind"
         button.AnchorPoint = Vector2.new(1, 0.5)
@@ -438,7 +481,10 @@ local guiOK, guiError = pcall(function()
         local control = tab:CreateToggle({Name = name, CurrentValue = Config[property], Flag = "HD_" .. property,
             Callback = function(value) Config[property] = value end})
         uiToggles[property] = control
-        if action then attachKey(name, action) end
+        if action then
+            local attached, err = pcall(attachKey, name, action)
+            if not attached then warn("HomeDefense inline key: " .. tostring(err)) end
+        end
     end
     local function slider(tab, name, property, minimum, maximum, increment)
         tab:CreateSlider({Name = name, Range = {minimum, maximum}, Increment = increment or 1,
@@ -497,13 +543,21 @@ local guiOK, guiError = pcall(function()
     local settings = window:CreateTab("Settings")
     settings:CreateParagraph({Title = "Home Defense v3", Content = "Click a key badge beside Aimbot, Triggerbot, Hitboxes, ESP, or Menu to rebind it. Escape cancels. Aim accepts RMB or a keyboard key. F1 is the default menu key. Always-on aim and trigger pause while the menu is open. Settings and keys save when file APIs are available."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
-    attachKey("Hide / show menu", "Menu")
+    pcall(attachKey, "Hide / show menu", "Menu")
     settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
         HoldToInteract = false, Flag = "HD_UnloadKey", Callback = function(value)
             if type(value) == "string" and Enum.KeyCode[value] then keys.Unload = Enum.KeyCode[value] end
         end})
     settings:CreateButton({Name = "Unload and restore changes", Callback = unload})
     Rayfield:LoadConfiguration()
+    Rayfield:SetVisibility(true)
+    bootMessage("Home Defense loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active (Drawing unavailable)."))
+    task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
-if not guiOK then warn("HomeDefense menu failed: " .. tostring(guiError)); unload() end
+if not guiOK then
+    releaseFire()
+    Config.Trigger, Config.Aim, Config.Hitboxes = false, false, false
+    bootMessage("Home Defense menu failed: " .. tostring(guiError) .. " — send this message to debug.")
+    warn("HomeDefense menu failed: " .. tostring(guiError))
+end
 
