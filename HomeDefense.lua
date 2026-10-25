@@ -24,7 +24,10 @@ local Config = {
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
     Retaliate = false, RetaliateDuration = 1.5,
+    AutoSave = true,
 }
+local configDefaults = {}
+for name, value in pairs(Config) do configDefaults[name] = value end
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Input = game:GetService("UserInputService")
@@ -32,12 +35,106 @@ local Lighting = game:GetService("Lighting")
 local LocalPlayer = Players.LocalPlayer
 local connections, originals, highlights = {}, {}, {}
 local Rayfield, uiToggles
+local configControls, keyControls = {}, {}
 local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
     Menu = Enum.KeyCode.F1, Recoil = Enum.KeyCode.F4, Retaliate = Enum.KeyCode.F3}
 local HttpService = game:GetService("HttpService")
+local keyDefaults = {}
+for action, key in pairs(keys) do keyDefaults[action] = key.Name end
+local configPath = "ProfessorZycro/HomeDefense-config.json"
+local configReady, configStatus, lastConfigSignature, nextConfigCheck = false, nil, nil, 0
+local lastConfigMessage = "No saved workspace config loaded"
+local configRanges = {Radius={20,600},Smoothing={0,0.5},PredictionTime={0,0.25},TriggerDelay={0,1},
+    FireInterval={0.03,1},TriggerPressTime={0.02,0.2},HitboxSize={2,20},HitboxTransparency={0,0.95},
+    MaxDistance={50,5000},ESPDistanceLimit={50,5000},ESPTextSize={10,24},CameraFOV={40,120},
+    RecoilStrength={0,100},RetaliateDuration={0.5,4}}
+local configOptions = {AimOrigin={Auto=true,Center=true,Cursor=true},AimPart={Auto=true,Head=true,UpperTorso=true,HumanoidRootPart=true},
+    TriggerMode={Auto=true,Mouse=true,Tool=true},TriggerPoint={Auto=true,Center=true,Cursor=true},
+    TriggerPattern={Pulse=true,Hold=true},HitboxPart={Head=true,Torso=true,Both=true}}
+local function configNote(message)
+    if message ~= lastConfigMessage and configStatus then configStatus:Set(message) end
+    lastConfigMessage = message
+end
+local function configSnapshot()
+    local snapshot = {Version=1,Settings={},Keys={}}
+    for name,value in pairs(Config) do snapshot.Settings[name]=value end
+    for action,key in pairs(keys) do snapshot.Keys[action]=key.Name end
+    return snapshot
+end
+local function configSignature()
+    local entries = {}
+    for name,value in pairs(Config) do entries[#entries+1]="S:"..name.."="..tostring(value) end
+    for action,key in pairs(keys) do entries[#entries+1]="K:"..action.."="..key.Name end
+    table.sort(entries)
+    return table.concat(entries,"\n")
+end
+local function applyConfig(snapshot)
+    assert(type(snapshot)=="table" and snapshot.Version==1 and type(snapshot.Settings)=="table", "Unsupported config format")
+    for name,default in pairs(configDefaults) do
+        local value=snapshot.Settings[name]
+        if type(value)==type(default) then
+            if type(value)=="number" then
+                if value==value and math.abs(value)<1e8 then
+                    local range=configRanges[name]
+                    Config[name]=range and math.clamp(value,range[1],range[2]) or value
+                end
+            elseif type(value)=="string" then
+                if configOptions[name] and configOptions[name][value] then Config[name]=value end
+            else Config[name]=value end
+        end
+    end
+    if type(snapshot.Keys)=="table" then
+        for action in pairs(keys) do
+            local name=snapshot.Keys[action]
+            if type(name)=="string" then
+                local ok,key=pcall(function()
+                    if action=="Aim" and name=="MouseButton2" then return Enum.UserInputType.MouseButton2 end
+                    return Enum.KeyCode[name]
+                end)
+                if ok and key and name~="Unknown" and name~="None" then keys[action]=key end
+            end
+        end
+    end
+    for action,button in pairs(keyButtons) do button.Text=keys[action].Name end
+    for action,control in pairs(keyControls) do pcall(function() control:Set(keys[action].Name) end) end
+    if Rayfield then
+        for name,value in pairs(Config) do
+            local control=configControls[name] or (Rayfield.Flags and Rayfield.Flags["HD_"..name])
+            if control and control.Set then
+                pcall(function() control:Set(type(value)=="string" and {value} or value) end)
+            end
+        end
+    end
+end
+local function saveSettings(force)
+    if type(writefile)~="function" then configNote("Workspace saving unavailable in this executor"); return false end
+    local signature=configSignature()
+    if not force and signature==lastConfigSignature then return true end
+    local ok,err=pcall(function()
+        if makefolder and (not isfolder or not isfolder("ProfessorZycro")) then makefolder("ProfessorZycro") end
+        writefile(configPath,HttpService:JSONEncode(configSnapshot()))
+    end)
+    if ok then lastConfigSignature=signature; configNote("Saved: workspace/"..configPath)
+    else configNote("Save failed: "..tostring(err)) end
+    return ok
+end
+local function loadSettings()
+    local ok,err=pcall(function()
+        assert(type(readfile)=="function", "Workspace reading unavailable")
+        if isfile then assert(isfile(configPath), "No saved config file yet") end
+        applyConfig(HttpService:JSONDecode(readfile(configPath)))
+    end)
+    if ok then lastConfigSignature=configSignature(); configNote("Loaded: workspace/"..configPath)
+    else configNote("Load skipped: "..tostring(err)) end
+    return ok
+end
+local function resetSettings()
+    applyConfig({Version=1,Settings=configDefaults,Keys=keyDefaults})
+    return saveSettings(true)
+end
 local keyFile = "HomeDefense-keys-v3.json"
 pcall(function()
     if isfile and readfile and isfile(keyFile) then
@@ -51,6 +148,7 @@ pcall(function()
         end
     end
 end)
+loadSettings()
 local lightingOriginals, cameraOriginals = {}, {}
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
 local previousBoot = playerGui:FindFirstChild("HomeDefenseStartup")
@@ -71,7 +169,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 14: starting..."
+bootText.Text = "Home Defense build 15: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -273,6 +371,7 @@ restore = function(part)
 end
 local function unload()
     if not active then return end
+    if configReady and Config.AutoSave then saveSettings(false) end
     active = false
     releaseFire()
     for _, connection in ipairs(connections) do connection:Disconnect() end
@@ -293,7 +392,10 @@ local function unload()
     bootGui:Destroy()
     env.HomeDefenseHelper = nil
 end
-env.HomeDefenseHelper = {Config = Config, Unload = unload}
+env.HomeDefenseHelper = {Config = Config, Unload = unload,
+    SaveSettings = function() return saveSettings(true) end,
+    LoadSettings = function() releaseFire(); return loadSettings() end,
+    ResetSettings = function() releaseFire(); return resetSettings() end}
 
 bootMessage("Home Defense: loading aim support...")
 local ok, result = bounded("Aim loader", 10, function()
@@ -449,13 +551,7 @@ connections[#connections + 1] = Input.InputBegan:Connect(function(input, process
         if action == "Aim" then Aimbot.Settings.TriggerKey = chosen end
         keyButtons[action].Text = chosen.Name
         capturingKey = nil
-        pcall(function()
-            if writefile then
-                local saved = {}
-                for name, key in pairs(keys) do saved[name] = key.Name end
-                writefile(keyFile, HttpService:JSONEncode(saved))
-            end
-        end)
+        saveSettings(true)
         return
     end
     if processed or Input:GetFocusedTextBox() then return end
@@ -539,6 +635,10 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     elapsed = elapsed + dt
     if elapsed < 0.1 then return end
     elapsed = 0
+    if configReady and Config.AutoSave and now >= nextConfigCheck then
+        nextConfigCheck = now + 1
+        saveSettings(false)
+    end
     -- One local render path drives both hold-to-aim and always-on aiming.
     Aimbot.Settings.Enabled = false
     Aimbot.Settings.TeamCheck = Config.TeamCheck
@@ -943,7 +1043,11 @@ local function fallbackLibrary(reason)
                 frame.Title.Text = settings.Title .. "\n" .. settings.Content
             end
             function tab:CreateKeybind(settings)
-                self:CreateLabel(settings.Name .. ": " .. settings.CurrentKeybind)
+                local label = self:CreateLabel(settings.Name .. ": " .. settings.CurrentKeybind)
+                return {Set=function(_,value)
+                    label:Set(settings.Name .. ": " .. value)
+                    settings.Callback(value)
+                end}
             end
             return tab
         end}
@@ -959,7 +1063,7 @@ local guiOK, guiError = pcall(function()
         Theme = "Default", ShowText = "Home Defense", DisableRayfieldPrompts = true,
         -- Our handler supports rebinding the menu without rebuilding the window.
         ToggleUIKeybind = Enum.KeyCode.F15,
-        ConfigurationSaving = {Enabled = true, FolderName = "ProfessorZycro", FileName = "HomeDefense-v2"},
+        ConfigurationSaving = {Enabled = false},
         Discord = {Enabled = false}, KeySystem = false,
     }
     local menuOK, window = bounded("Rayfield startup", 15, function()
@@ -1022,24 +1126,30 @@ local guiOK, guiError = pcall(function()
     end
     local function toggle(tab, name, property, action)
         local control = tab:CreateToggle({Name = name, CurrentValue = Config[property], Flag = "HD_" .. property,
-            Callback = function(value) Config[property] = value end})
+            Callback = function(value)
+                Config[property] = value
+                if property == "AutoSave" then saveSettings(true) end
+            end})
         uiToggles[property] = control
+        configControls[property] = control
         if action then
             local attached, err = pcall(attachKey, name, action)
             if not attached then warn("HomeDefense inline key: " .. tostring(err)) end
         end
     end
     local function slider(tab, name, property, minimum, maximum, increment)
-        return tab:CreateSlider({Name = name, Range = {minimum, maximum}, Increment = increment or 1,
+        local control = tab:CreateSlider({Name = name, Range = {minimum, maximum}, Increment = increment or 1,
             CurrentValue = Config[property], Flag = "HD_" .. property,
             Callback = function(value) Config[property] = value end})
+        configControls[property] = control
+        return control
     end
     local aim = window:CreateTab("Aim")
     toggle(aim, "Aimbot", "Aim", "Aim")
     toggle(aim, "Always on (no hold required)", "AimAlways")
     toggle(aim, "Keep current target while valid", "StickyAim")
     toggle(aim, "Pause aim while menu open", "PauseAimWithMenu")
-    aim:CreateDropdown({Name = "Aim circle position", Options = {"Auto", "Center", "Cursor"},
+    configControls.AimOrigin = aim:CreateDropdown({Name = "Aim circle position", Options = {"Auto", "Center", "Cursor"},
         CurrentOption = {Config.AimOrigin}, Flag = "HD_AimOrigin",
         Callback = function(options) Config.AimOrigin = options[1] end})
     toggle(aim, "Team check", "TeamCheck")
@@ -1059,6 +1169,7 @@ local guiOK, guiError = pcall(function()
                 Aimbot.Restart()
             end
         end})
+    configControls.AimPart = aimPartControl
     toggle(aim, "Movement prediction", "AimPrediction")
     slider(aim, "Prediction lead (seconds)", "PredictionTime", 0, 0.25, 0.01)
     aim:CreateButton({Name = "Apply responsive aim preset", Callback = function()
@@ -1076,13 +1187,13 @@ local guiOK, guiError = pcall(function()
     toggle(combat, "Triggerbot", "Trigger", "Trigger")
     toggle(combat, "Skip non-collidable effects", "TriggerIgnoreEffects")
     triggerStatus = combat:CreateLabel("Trigger: off")
-    combat:CreateDropdown({Name = "Fire method", Options = {"Auto", "Mouse", "Tool"},
+    configControls.TriggerMode = combat:CreateDropdown({Name = "Fire method", Options = {"Auto", "Mouse", "Tool"},
         CurrentOption = {Config.TriggerMode}, Flag = "HD_TriggerMode",
         Callback = function(options) releaseFire(); Config.TriggerMode = options[1] end})
-    combat:CreateDropdown({Name = "Crosshair position", Options = {"Auto", "Center", "Cursor"},
+    configControls.TriggerPoint = combat:CreateDropdown({Name = "Crosshair position", Options = {"Auto", "Center", "Cursor"},
         CurrentOption = {Config.TriggerPoint}, Flag = "HD_TriggerPoint",
         Callback = function(options) Config.TriggerPoint = options[1] end})
-    combat:CreateDropdown({Name = "Firing pattern", Options = {"Pulse", "Hold"},
+    configControls.TriggerPattern = combat:CreateDropdown({Name = "Firing pattern", Options = {"Pulse", "Hold"},
         CurrentOption = {Config.TriggerPattern}, Flag = "HD_TriggerPattern",
         Callback = function(options) releaseFire(); releaseAt = nil; Config.TriggerPattern = options[1] end})
     slider(combat, "Mouse press length (seconds)", "TriggerPressTime", 0.02, 0.2, 0.01)
@@ -1096,7 +1207,7 @@ local guiOK, guiError = pcall(function()
     end})
     toggle(combat, "Expand enemy hitboxes", "Hitboxes", "Hitboxes")
     toggle(combat, "Hitbox wall check", "HitboxWallCheck")
-    combat:CreateDropdown({Name = "Expand body part", Options = {"Head", "Torso", "Both"},
+    configControls.HitboxPart = combat:CreateDropdown({Name = "Expand body part", Options = {"Head", "Torso", "Both"},
         CurrentOption = {Config.HitboxPart}, Flag = "HD_HitboxPart",
         Callback = function(options) Config.HitboxPart = options[1] end})
     slider(combat, "Hitbox size (studs)", "HitboxSize", 2, 20)
@@ -1131,23 +1242,26 @@ local guiOK, guiError = pcall(function()
     retaliateStatus = retaliateTab:CreateLabel("Retaliate: Off")
     retaliateTab:CreateParagraph({Title = "How attribution works", Content = "Turns aim toward a probable attacker after health loss and a recent incoming bullet path. Does not teleport. Fires only when the crosshair hits that attacker, with a weapon equipped. Respects teams, walls and death. Client signals do not confirm damage ownership: fall damage near gunfire can be misattributed; ambiguous or unknown sources are skipped. Hide the menu to allow firing."})
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v14", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    toggle(settings, "Auto-save config to workspace", "AutoSave")
+    configStatus = settings:CreateLabel(lastConfigMessage)
+    settings:CreateParagraph({Title = "Workspace file", Content = "ProfessorZycro/HomeDefense-config.json inside your executor workspace. Includes feature settings and keybinds. Loads at startup and works in the compatible menu too."})
+    settings:CreateButton({Name = "Save config now", Callback = function() saveSettings(true) end})
+    settings:CreateButton({Name = "Load saved config", Callback = function() releaseFire(); aimLock=nil; loadSettings() end})
+    settings:CreateButton({Name = "Reset and save defaults", Callback = function() releaseFire(); aimLock=nil; resetSettings() end})
+    settings:CreateParagraph({Title = "Home Defense v15", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
-    settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
+    keyControls.Unload = settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
         HoldToInteract = false, Flag = "HD_UnloadKey", Callback = function(value)
             if type(value) == "string" and Enum.KeyCode[value] then keys.Unload = Enum.KeyCode[value] end
         end})
     settings:CreateButton({Name = "Unload and restore changes", Callback = unload})
-    Rayfield:LoadConfiguration()
-    -- Do not reactivate the previous shared-settings dampener through saved flags.
-    Config.RecoilEnabled = false
-    if uiToggles.RecoilEnabled then uiToggles.RecoilEnabled:Set(false) end
+    configReady = true
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 14: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 15: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Workspace config is available in Settings.")
     else
-        bootMessage("Home Defense build 14: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 15: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
