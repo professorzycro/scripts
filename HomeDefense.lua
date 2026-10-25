@@ -9,7 +9,8 @@ if env.HomeDefenseHelper then pcall(env.HomeDefenseHelper.Unload) end
 local Config = {
     Aim = true, AimAlways = false, TeamCheck = true, WallCheck = true, AimIgnoreEffects = true,
     AimOrigin = "Auto", PauseAimWithMenu = false, AimDebug = true,
-    AimPart = "Head", Radius = 150, Smoothing = 0.08,
+    AimPart = "Auto", Radius = 150, Smoothing = 0.04,
+    StickyAim = true, AimPrediction = false, PredictionTime = 0.08,
     Trigger = false, TriggerDelay = 0, FireInterval = 0.06,
     TriggerMode = "Auto", TriggerPoint = "Auto",
     TriggerIgnoreEffects = true,
@@ -68,7 +69,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 11: starting..."
+bootText.Text = "Home Defense build 12: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -99,6 +100,7 @@ local Aimbot
 local nativeAimbot = false
 local aimGui
 local aimRenderName = "HomeDefenseAimRender"
+local aimLock
 local recoilRenderName = "HomeDefenseRecoilRender"
 local recoilStatus, recoilCamera, recoilPrevious, recoilMessage
 local localRigs = setmetatable({}, {__mode = "k"})
@@ -132,6 +134,7 @@ local deadHumanoids = setmetatable({}, {__mode = "k"})
 local watchedHumanoids = setmetatable({}, {__mode = "k"})
 local function markDead(character, humanoid)
     deadHumanoids[humanoid] = true
+    if aimLock and aimLock.Character == character then aimLock = nil end
     if aimedCharacter == character or (aimedAt and aimedAt.Character == character) then
         aimedAt, aimedCharacter, aimedSince = nil, nil, 0
         releaseFire()
@@ -540,23 +543,26 @@ local function renderAim(dt)
     aimCircle.Size = UDim2.fromOffset(Config.Radius * 2, Config.Radius * 2)
     circleStroke.Color = Color3.new(1, 1, 1)
     tracer.Visible = false
-    if not Config.Aim then aimMessage("off"); return end
-    if capturingKey or Input:GetFocusedTextBox() then aimMessage("paused while editing"); return end
-    if Config.PauseAimWithMenu and Rayfield and Rayfield:IsVisible() then aimMessage("paused: menu open"); return end
+    if not Config.Aim then aimLock = nil; aimMessage("off"); return end
+    if capturingKey or Input:GetFocusedTextBox() then aimLock = nil; aimMessage("paused while editing"); return end
+    if Config.PauseAimWithMenu and Rayfield and Rayfield:IsVisible() then aimLock = nil; aimMessage("paused: menu open"); return end
     if not Config.AimAlways then
         local held = keys.Aim.EnumType == Enum.UserInputType and Input:IsMouseButtonPressed(keys.Aim)
             or keys.Aim.EnumType == Enum.KeyCode and Input:IsKeyDown(keys.Aim)
-        if not held then aimMessage("hold " .. keys.Aim.Name .. " or enable Always on"); return end
+        if not held then aimLock = nil; aimMessage("hold " .. keys.Aim.Name .. " or enable Always on"); return end
     end
-    local closest, closestPlayer, closestCharacter, distance = nil, nil, nil, Config.Radius
     local insideCircle, wallBlocked = 0, 0
-    for _, player in ipairs(Players:GetPlayers()) do
+    local function candidate(player)
         local character = enemy(player) and living(player)
-        local part = character and (character:FindFirstChild(Config.AimPart) or character:FindFirstChild("HumanoidRootPart"))
-        if part then
+        if not character then return end
+        local names = Config.AimPart == "Auto" and {"Head", "UpperTorso", "Torso", "HumanoidRootPart"}
+            or {Config.AimPart, "HumanoidRootPart"}
+        for _, name in ipairs(names) do
+            local part = character:FindFirstChild(name)
+            if part then
             local point, visible = camera:WorldToViewportPoint(part.Position)
             local screenDistance = (Vector2.new(point.X, point.Y) - cursor).Magnitude
-            if visible and screenDistance < distance then
+            if visible and screenDistance <= Config.Radius then
                 insideCircle = insideCircle + 1
                 local clear = true
                 if Config.WallCheck then
@@ -578,25 +584,47 @@ local function renderAim(dt)
                     end
                 end
                 if clear then
-                    closest, closestPlayer, closestCharacter, distance = part, player, character, screenDistance
+                    return {Part = part, Player = player, Character = character, Distance = screenDistance}
                 else wallBlocked = wallBlocked + 1 end
+            end
             end
         end
     end
+    local selected
+    if Config.StickyAim and aimLock and aimLock.Player.Character == aimLock.Character then
+        selected = candidate(aimLock.Player)
+    end
+    if not selected then
+        for _, player in ipairs(Players:GetPlayers()) do
+            local option = candidate(player)
+            if option and (not selected or option.Distance < selected.Distance) then selected = option end
+        end
+    end
     -- Recheck after selection so a death or respawn cannot leave a stale part locked.
-    if closest and living(closestPlayer) ~= closestCharacter then closest = nil end
-    if closest then
-        aimMessage((Config.AimAlways and "always on: " or "tracking: ") .. closest.Parent.Name)
+    if selected and living(selected.Player) ~= selected.Character then selected = nil end
+    aimLock = selected
+    if selected then
+        local closest = selected.Part
+        local aimPosition = closest.Position
+        if Config.AimPrediction then
+            local velocity = closest.AssemblyLinearVelocity
+            if velocity then
+                local speed = velocity.Magnitude
+                if speed > 120 then velocity = velocity * (120 / speed) end
+                aimPosition = aimPosition + velocity * math.clamp(Config.PredictionTime, 0, 0.25)
+            end
+        end
+        aimMessage((Config.AimAlways and "always on: " or "tracking: ") .. selected.Player.Name .. " / " .. closest.Name)
         circleStroke.Color = Color3.fromRGB(255, 100, 100)
         if Config.Tracer then
-            local point = camera:WorldToViewportPoint(closest.Position)
+            local point = camera:WorldToViewportPoint(aimPosition)
             local delta = Vector2.new(point.X, point.Y) - cursor
             tracer.Visible, tracer.Position = true, UDim2.fromOffset(cursor.X, cursor.Y)
             tracer.Size = UDim2.fromOffset(delta.Magnitude, 1)
             tracer.Rotation = math.deg(math.atan2(delta.Y, delta.X))
         end
-        local goal = CFrame.lookAt(camera.CFrame.Position, closest.Position)
-        local alpha = Config.Smoothing <= 0 and 1 or 1 - math.exp(-dt / Config.Smoothing)
+        local goal = CFrame.lookAt(camera.CFrame.Position, aimPosition)
+        local alpha = Config.Smoothing <= 0 and 1 or 1 - math.exp(-math.max(dt, 0) / Config.Smoothing)
         camera.CFrame = camera.CFrame:Lerp(goal, alpha)
     else
         aimMessage(wallBlocked > 0 and "target blocked by wall" or (insideCircle == 0 and "no eligible player inside circle" or "no visible target"))
@@ -752,11 +780,18 @@ local function fallbackLibrary(reason)
                 local current = 1
                 for i, value in ipairs(settings.Options) do if value == settings.CurrentOption[1] then current = i end end
                 local select = button(frame, settings.Options[current] .. " >")
+                local control = {}
+                function control:Set(options)
+                    for i, option in ipairs(settings.Options) do if option == options[1] then current = i end end
+                    select.Text = settings.Options[current] .. " >"
+                    settings.Callback({settings.Options[current]})
+                end
                 connections[#connections + 1] = select.MouseButton1Click:Connect(function()
                     current = current % #settings.Options + 1
                     select.Text = settings.Options[current] .. " >"
                     settings.Callback({settings.Options[current]})
                 end)
+                return control
             end
             function tab:CreateLabel(text)
                 local frame = row(text)
@@ -864,6 +899,7 @@ local guiOK, guiError = pcall(function()
     local aim = window:CreateTab("Aim")
     toggle(aim, "Aimbot", "Aim", "Aim")
     toggle(aim, "Always on (no hold required)", "AimAlways")
+    toggle(aim, "Keep current target while valid", "StickyAim")
     toggle(aim, "Pause aim while menu open", "PauseAimWithMenu")
     toggle(aim, "Show live aim status", "AimDebug")
     aim:CreateDropdown({Name = "Aim circle position", Options = {"Auto", "Center", "Cursor"},
@@ -872,11 +908,11 @@ local guiOK, guiError = pcall(function()
     toggle(aim, "Team check", "TeamCheck")
     toggle(aim, "Wall check", "WallCheck")
     toggle(aim, "Skip non-collidable effects", "AimIgnoreEffects")
-    slider(aim, "Aim radius (pixels)", "Radius", 20, 600)
-    slider(aim, "Smoothing (seconds)", "Smoothing", 0, 0.5, 0.01)
+    local radiusControl = slider(aim, "Aim radius (pixels)", "Radius", 20, 600)
+    local smoothingControl = slider(aim, "Smoothing (seconds)", "Smoothing", 0, 0.5, 0.01)
     toggle(aim, "Show aim circle", "ShowFOV")
     toggle(aim, "Target tracer", "Tracer")
-    aim:CreateDropdown({Name = "Aim part", Options = {"Head", "HumanoidRootPart"},
+    local aimPartControl = aim:CreateDropdown({Name = "Aim part", Options = {"Auto", "Head", "UpperTorso", "HumanoidRootPart"},
         CurrentOption = {Config.AimPart}, Flag = "HD_AimPart",
         Callback = function(options)
             if Config.AimPart ~= options[1] then
@@ -886,6 +922,19 @@ local guiOK, guiError = pcall(function()
                 Aimbot.Restart()
             end
         end})
+    toggle(aim, "Movement prediction", "AimPrediction")
+    slider(aim, "Prediction lead (seconds)", "PredictionTime", 0, 0.25, 0.01)
+    aim:CreateButton({Name = "Apply responsive aim preset", Callback = function()
+        Config.Aim, Config.StickyAim, Config.AimPart = true, true, "Auto"
+        Config.Radius, Config.Smoothing = 180, 0.03
+        aimLock = nil
+        if uiToggles.Aim then uiToggles.Aim:Set(true) end
+        if uiToggles.StickyAim then uiToggles.StickyAim:Set(true) end
+        if radiusControl then radiusControl:Set(180) end
+        if smoothingControl then smoothingControl:Set(0.03) end
+        if aimPartControl then aimPartControl:Set({"Auto"}) end
+    end})
+    aim:CreateParagraph({Title = "Tracking", Content = "Auto prefers a visible head, then torso/root. Target retention ends on death, obstruction, team change or leaving the circle. Lower smoothing responds faster; zero snaps. Prediction is optional fixed-time movement lead, not a weapon-specific ballistic solution."})
     local combat = window:CreateTab("Trigger & Hitboxes")
     toggle(combat, "Triggerbot", "Trigger", "Trigger")
     toggle(combat, "Skip non-collidable effects", "TriggerIgnoreEffects")
@@ -929,7 +978,7 @@ local guiOK, guiError = pcall(function()
     recoilStatus = recoilTab:CreateLabel("Recoil: Off")
     recoilTab:CreateParagraph({Title = "Camera-only dampener", Content = "Disabled by default. Smooths camera rotation while firing with the mouse stationary; pauses during mouse movement. Leaves weapon settings, animation recoil, spread and equip logic alone. Reloading restores the previous version's recoil settings."})
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v11", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    settings:CreateParagraph({Title = "Home Defense v12", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
     settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
@@ -943,9 +992,9 @@ local guiOK, guiError = pcall(function()
     if uiToggles.RecoilEnabled then uiToggles.RecoilEnabled:Set(false) end
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 11: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 12: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 11: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 12: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
