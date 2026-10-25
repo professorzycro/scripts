@@ -2,7 +2,7 @@
 -- Aimbot credit: Exunys https://github.com/Exunys/Aimbot-V3 (CC0-1.0).
 -- Generic player-character support; not tested against this game's weapons.
 -- Rayfield credit: Sirius https://docs.sirius.menu/rayfield
--- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | F1 menu
+-- Defaults: RMB aim | F6 trigger | F7 hitboxes | F8 ESP | End unload | F1 menu | F4 recoil
 local env = getgenv()
 if env.HomeDefenseHelper then pcall(env.HomeDefenseHelper.Unload) end
 
@@ -19,6 +19,7 @@ local Config = {
     ESPTeamCheck = true, ESPThroughWalls = true, ESPBoxes = false,
     ESPDistanceLimit = 1500, ESPTextSize = 14, Fullbright = false,
     CameraOverride = false, CameraFOV = 80,
+    RecoilEnabled = false, RecoilStrength = 60, RecoilGun = true,
 }
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -32,7 +33,7 @@ local aimHud
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
-    Menu = Enum.KeyCode.F1}
+    Menu = Enum.KeyCode.F1, Recoil = Enum.KeyCode.F4}
 local HttpService = game:GetService("HttpService")
 local keyFile = "HomeDefense-keys-v3.json"
 pcall(function()
@@ -67,7 +68,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 8: starting..."
+bootText.Text = "Home Defense build 9: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -119,6 +120,58 @@ local function localIgnoreList(camera)
     for rig in pairs(localRigs) do table.insert(ignored, rig) end
     return ignored
 end
+local recoil = {Config = nil, Original = {}, Written = {}, Reading = false, NextRead = 0, Message = "Off"}
+local recoilStatus
+local function restoreRecoil()
+    if recoil.Config then
+        for property, original in pairs(recoil.Original) do
+            if recoil.Config[property] == recoil.Written[property] then
+                pcall(function() recoil.Config[property] = original end)
+            end
+        end
+    end
+    recoil.Config, recoil.Original, recoil.Written, recoil.NextRead = nil, {}, {}, 0
+end
+local function updateRecoil(now)
+    if not Config.RecoilEnabled then
+        restoreRecoil()
+        recoil.Message = "Off"
+    elseif not recoil.Config and not recoil.Reading and now >= recoil.NextRead then
+        recoil.Reading, recoil.NextRead, recoil.Message = true, now + 2, "Finding ACS recoil settings..."
+        local ok, result = bounded("ACS recoil settings", 5, function()
+            local storage = game:GetService("ReplicatedStorage")
+            local engine = storage:FindFirstChild("ACS_Engine")
+            local rules = engine and engine:FindFirstChild("GameRules")
+            local module = rules and rules:FindFirstChild("Config")
+            assert(module and module:IsA("ModuleScript"), "ACS GameRules.Config unavailable")
+            local settings = require(module)
+            assert(type(settings) == "table" and type(settings.CameraRecoilScale) == "number"
+                and type(settings.GunRecoilScale) == "number", "Unsupported ACS recoil settings")
+            return settings
+        end)
+        recoil.Reading = false
+        if not active or not Config.RecoilEnabled then return end
+        if ok then
+            recoil.Config = result
+            recoil.Original = {CameraRecoilScale = result.CameraRecoilScale, GunRecoilScale = result.GunRecoilScale}
+        else
+            recoil.Message = tostring(result)
+        end
+    end
+    if Config.RecoilEnabled and recoil.Config then
+        local multiplier = 1 - math.clamp(Config.RecoilStrength, 0, 100) / 100
+        local ok, err = pcall(function()
+            local camera = recoil.Original.CameraRecoilScale * multiplier
+            local weapon = recoil.Original.GunRecoilScale * (Config.RecoilGun and multiplier or 1)
+            recoil.Config.CameraRecoilScale = camera
+            recoil.Written.CameraRecoilScale = camera
+            recoil.Config.GunRecoilScale = weapon
+            recoil.Written.GunRecoilScale = weapon
+        end)
+        recoil.Message = ok and ("Applied: " .. Config.RecoilStrength .. "% reduction") or ("Cannot apply: " .. tostring(err))
+    end
+    if recoilStatus then recoilStatus:Set("Recoil: " .. recoil.Message) end
+end
 local function enemy(player)
     return not isSelfPlayer(player) and (not Config.TeamCheck
         or LocalPlayer.Neutral or player.Neutral
@@ -143,6 +196,7 @@ end
 local function unload()
     if not active then return end
     active = false
+    restoreRecoil()
     releaseFire()
     for _, connection in ipairs(connections) do connection:Disconnect() end
     pcall(function() RunService:UnbindFromRenderStep(aimRenderName) end)
@@ -310,6 +364,7 @@ connections[#connections + 1] = Input.InputBegan:Connect(function(input, process
     if input.KeyCode == keys.Trigger then flip("Trigger") end
     if input.KeyCode == keys.Hitboxes then flip("Hitboxes") end
     if input.KeyCode == keys.ESP then flip("Highlights") end
+    if input.KeyCode == keys.Recoil then flip("RecoilEnabled") end
 end)
 
 local elapsed = 0
@@ -354,6 +409,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     elapsed = elapsed + dt
     if elapsed < 0.1 then return end
     elapsed = 0
+    updateRecoil(now)
     -- One local render path drives both hold-to-aim and always-on aiming.
     Aimbot.Settings.Enabled = false
     Aimbot.Settings.TeamCheck = Config.TeamCheck
@@ -840,8 +896,14 @@ local guiOK, guiError = pcall(function()
     toggle(visuals, "Fullbright", "Fullbright")
     toggle(visuals, "Override camera FOV", "CameraOverride")
     slider(visuals, "Camera FOV", "CameraFOV", 40, 120)
+    local recoilTab = window:CreateTab("Recoil")
+    toggle(recoilTab, "Recoil dampener", "RecoilEnabled", "Recoil")
+    slider(recoilTab, "Recoil reduction (%)", "RecoilStrength", 0, 100, 5)
+    toggle(recoilTab, "Also reduce weapon animation recoil", "RecoilGun")
+    recoilStatus = recoilTab:CreateLabel("Recoil: Off")
+    recoilTab:CreateParagraph({Title = "ACS recoil", Content = "0% keeps original recoil; 100% removes the scaled recoil contribution. Applies to new shots; existing spring motion settles naturally. Disabling or unloading restores original scales. This does not change bullet spread."})
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v7", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    settings:CreateParagraph({Title = "Home Defense v9", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
     settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
@@ -852,9 +914,9 @@ local guiOK, guiError = pcall(function()
     Rayfield:LoadConfiguration()
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 8: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 9: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 8: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 9: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
