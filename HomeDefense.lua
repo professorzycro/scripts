@@ -7,10 +7,11 @@ local env = getgenv()
 if env.HomeDefenseHelper then pcall(env.HomeDefenseHelper.Unload) end
 
 local Config = {
-    Aim = true, AimAlways = false, TeamCheck = true, WallCheck = true,
+    Aim = true, AimAlways = false, TeamCheck = true, WallCheck = true, AimIgnoreEffects = true,
     AimPart = "Head", Radius = 150, Smoothing = 0.08,
-    Trigger = false, TriggerDelay = 0.12, FireInterval = 0.15,
+    Trigger = false, TriggerDelay = 0, FireInterval = 0.06,
     TriggerMode = "Auto", TriggerPoint = "Auto",
+    TriggerIgnoreEffects = true, TriggerDebug = true,
     Hitboxes = false, HitboxSize = 6, Highlights = false,
     MaxDistance = 1500, ShowFOV = true, Tracer = false,
     ESPNames = true, ESPHealth = true, ESPDistance = true, ESPTeamColors = true,
@@ -26,6 +27,7 @@ local LocalPlayer = Players.LocalPlayer
 local connections, originals, highlights = {}, {}, {}
 local Rayfield, uiToggles
 local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
+local triggerHud, lastTriggerMessage
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
@@ -64,7 +66,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 5: starting..."
+bootText.Text = "Home Defense build 6: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -92,6 +94,8 @@ local function releaseFire()
 end
 local Aimbot
 local nativeAimbot = false
+local aimGui
+local aimRenderName = "HomeDefenseAimRender"
 local function enemy(player)
     return player ~= LocalPlayer and (not Config.TeamCheck
         or LocalPlayer.Neutral or player.Neutral
@@ -118,6 +122,8 @@ local function unload()
     active = false
     releaseFire()
     for _, connection in ipairs(connections) do connection:Disconnect() end
+    pcall(function() RunService:UnbindFromRenderStep(aimRenderName) end)
+    if aimGui then aimGui:Destroy() end
     for part in pairs(originals) do restore(part) end
     for _, visual in pairs(highlights) do
         visual.Highlight:Destroy(); visual.Tag:Destroy(); visual.Box:Destroy()
@@ -153,7 +159,7 @@ if not ok or type(Aimbot) ~= "table" then
 else
     nativeAimbot = true
 end
-Aimbot.Settings.Enabled = Config.Aim
+Aimbot.Settings.Enabled = false
 Aimbot.Settings.AliveCheck = true
 Aimbot.Settings.TeamCheck = Config.TeamCheck
 Aimbot.Settings.WallCheck = Config.WallCheck
@@ -162,6 +168,7 @@ Aimbot.Settings.Sensitivity = Config.Smoothing
 Aimbot.Settings.TriggerKey = keys.Aim
 Aimbot.Settings.Toggle = false
 Aimbot.FOVSettings.Radius = Config.Radius
+Aimbot.FOVSettings.Visible = false
 Aimbot.ClosestPlayerTracer.Enabled = false
 -- Use our single-shot trigger loop so delayed callbacks cannot pile up.
 Aimbot.Triggerbot.Enabled = false
@@ -175,9 +182,24 @@ end
 
 local mouse = LocalPlayer:GetMouse()
 local function status(message)
+    if triggerHud then
+        triggerHud.Visible = Config.Trigger and Config.TriggerDebug
+        triggerHud.Text = "Trigger: " .. message
+    end
+    lastTriggerMessage = message
     if triggerStatus and message ~= triggerStatus.LastMessage then
         triggerStatus.LastMessage = message
         triggerStatus:Set("Trigger: " .. message)
+    end
+end
+local function playerForHit(instance)
+    local ancestor = instance
+    while ancestor and ancestor ~= workspace do
+        if ancestor:IsA("Model") then
+            local player = Players:GetPlayerFromCharacter(ancestor)
+            if player then return player end
+        end
+        ancestor = ancestor.Parent
     end
 end
 local function triggerTarget()
@@ -185,11 +207,14 @@ local function triggerTarget()
     if not camera then return end
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
+    params.IgnoreWater = true
     local ignored = {camera}
     if LocalPlayer.Character then table.insert(ignored, LocalPlayer.Character) end
     params.FilterDescendantsInstances = ignored
+    local localHead = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Head")
+    local firstPerson = localHead and (camera.CFrame.Position - localHead.Position).Magnitude < 1.5
     local centered = Config.TriggerPoint == "Center" or
-        (Config.TriggerPoint == "Auto" and Input.MouseBehavior == Enum.MouseBehavior.LockCenter)
+        (Config.TriggerPoint == "Auto" and (Input.MouseBehavior == Enum.MouseBehavior.LockCenter or firstPerson))
     local ray
     if centered then
         ray = camera:ViewportPointToRay(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -197,20 +222,30 @@ local function triggerTarget()
         local location = Input:GetMouseLocation()
         ray = camera:ScreenPointToRay(location.X, location.Y)
     end
-    local hit = workspace:Raycast(ray.Origin, ray.Direction * Config.MaxDistance, params)
-    local target = hit and hit.Instance
-    if not target then status("no target under crosshair"); return end
-    local model = target
-    local player
-    while model and not player do
-        if model:IsA("Model") then player = Players:GetPlayerFromCharacter(model) end
-        if not player then model = model.Parent end
+    for _ = 1, 12 do
+        params.FilterDescendantsInstances = ignored
+        local hit = workspace:Raycast(ray.Origin, ray.Direction * Config.MaxDistance, params)
+        local target = hit and hit.Instance
+        if not target then status("no player under crosshair"); return end
+        local player = playerForHit(target)
+        -- Resolve character ancestry before considering collision flags: limbs and
+        -- accessory handles can be non-collidable but still belong to players.
+        if player then
+            if not enemy(player) then status("teammate: " .. player.Name); return end
+            if not living(player) then status("dead player: " .. player.Name); return end
+            status("player: " .. player.Name)
+            return player
+        end
+        -- Match the saved ACS ray's treatment of non-collidable effects.
+        -- Solid geometry and Armor remain blockers regardless of transparency.
+        if Config.TriggerIgnoreEffects and target:IsA("BasePart") and not target.CanCollide and target.Name ~= "Armor" then
+            table.insert(ignored, target)
+        else
+            status("blocked by " .. target.Name)
+            return
+        end
     end
-    if not player then status("crosshair on scenery / NPC"); return end
-    if not enemy(player) then status("blocked by team check"); return end
-    if not living(player) then status("target is dead"); return end
-    -- The first ray hit must belong to the target, so walls always block firing.
-    return player
+    status("too many effect layers; move crosshair")
 end
 
 connections[#connections + 1] = Input.InputBegan:Connect(function(input, processed)
@@ -276,13 +311,13 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         if mode == "Auto" then mode = (canClick or canSingleClick) and "Mouse" or "Tool" end
         if mode == "Mouse" and (canClick or canSingleClick) then
             local fired, err = pcall(function()
-                if canClick then mouse1press(); fireHeld = true; releaseAt = now + 0.04
+                if canClick then mouse1press(); fireHeld = true; releaseAt = now + 0.02
                 else mouse1click() end
             end)
             status(fired and ("clicking at " .. target.Name) or ("input failed: " .. tostring(err)))
             lastShot = now
         elseif mode == "Tool" and tool then
-            local fired, err = pcall(function() tool:Activate(); heldTool = tool; releaseAt = now + 0.04 end)
+            local fired, err = pcall(function() tool:Activate(); heldTool = tool; releaseAt = now + 0.02 end)
             status(fired and ("activating " .. tool.Name) or ("tool failed: " .. tostring(err)))
             lastShot = now
         else
@@ -292,14 +327,15 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     elapsed = elapsed + dt
     if elapsed < 0.1 then return end
     elapsed = 0
-    Aimbot.Settings.Enabled = Config.Aim and not Config.AimAlways
+    -- One local render path drives both hold-to-aim and always-on aiming.
+    Aimbot.Settings.Enabled = false
     Aimbot.Settings.TeamCheck = Config.TeamCheck
     Aimbot.Settings.WallCheck = Config.WallCheck
     Aimbot.Settings.LockPart = Config.AimPart
     Aimbot.Settings.Sensitivity = Config.Smoothing
     Aimbot.FOVSettings.Radius = Config.Radius
-    Aimbot.FOVSettings.Visible = Config.ShowFOV
-    Aimbot.ClosestPlayerTracer.Enabled = Config.Tracer
+    Aimbot.FOVSettings.Visible = false
+    Aimbot.ClosestPlayerTracer.Enabled = false
     local bright = {Brightness = 2, ClockTime = 14, FogEnd = 100000,
         GlobalShadows = false, Ambient = Color3.fromRGB(180, 180, 180)}
     for property, value in pairs(bright) do
@@ -393,8 +429,36 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         end
     end
 end)
-connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
-    if not active or not Config.Aim or (nativeAimbot and not Config.AimAlways) or capturingKey
+aimGui = Instance.new("ScreenGui")
+aimGui.Name, aimGui.ResetOnSpawn, aimGui.IgnoreGuiInset = "HomeDefenseAimVisuals", false, true
+aimGui.DisplayOrder, aimGui.Parent = 99998, playerGui
+pcall(function() if gethui then aimGui.Parent = gethui() end end)
+local aimCircle = Instance.new("Frame")
+aimCircle.Name, aimCircle.AnchorPoint = "AimCircle", Vector2.new(0.5, 0.5)
+aimCircle.BackgroundTransparency, aimCircle.BorderSizePixel, aimCircle.Parent = 1, 0, aimGui
+local corner = Instance.new("UICorner")
+corner.CornerRadius, corner.Parent = UDim.new(0.5, 0), aimCircle
+local circleStroke = Instance.new("UIStroke")
+circleStroke.Thickness, circleStroke.Color, circleStroke.Parent = 1.5, Color3.new(1, 1, 1), aimCircle
+local tracer = Instance.new("Frame")
+tracer.AnchorPoint, tracer.BorderSizePixel, tracer.Visible = Vector2.new(0, 0.5), 0, false
+tracer.BackgroundColor3, tracer.Parent = Color3.fromRGB(255, 100, 100), aimGui
+triggerHud = Instance.new("TextLabel")
+triggerHud.Name, triggerHud.Size = "TriggerStatus", UDim2.fromOffset(500, 30)
+triggerHud.Position = UDim2.new(0.5, -250, 1, -75)
+triggerHud.BackgroundTransparency, triggerHud.TextStrokeTransparency = 1, 0.25
+triggerHud.Font, triggerHud.TextSize = Enum.Font.GothamMedium, 14
+triggerHud.TextColor3, triggerHud.Parent = Color3.new(1, 1, 1), aimGui
+triggerHud.Visible, triggerHud.Text = false, "Trigger: off"
+local function renderAim(dt)
+    if not active then return end
+    local cursor = Input:GetMouseLocation()
+    aimCircle.Visible = Config.Aim and Config.ShowFOV
+    aimCircle.Position = UDim2.fromOffset(cursor.X, cursor.Y)
+    aimCircle.Size = UDim2.fromOffset(Config.Radius * 2, Config.Radius * 2)
+    circleStroke.Color = Color3.new(1, 1, 1)
+    tracer.Visible = false
+    if not Config.Aim or capturingKey
         or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible()) then return end
     if not Config.AimAlways then
         local held = keys.Aim.EnumType == Enum.UserInputType and Input:IsMouseButtonPressed(keys.Aim)
@@ -403,11 +467,10 @@ connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
     end
     local camera = workspace.CurrentCamera
     if not camera then return end
-    local cursor = Input:GetMouseLocation()
     local closest, distance = nil, Config.Radius
     for _, player in ipairs(Players:GetPlayers()) do
         local character = enemy(player) and living(player)
-        local part = character and character:FindFirstChild(Config.AimPart)
+        local part = character and (character:FindFirstChild(Config.AimPart) or character:FindFirstChild("HumanoidRootPart"))
         if part then
             local point, visible = camera:WorldToScreenPoint(part.Position)
             local screenDistance = (Vector2.new(point.X, point.Y) - cursor).Magnitude
@@ -418,20 +481,40 @@ connections[#connections + 1] = RunService.RenderStepped:Connect(function(dt)
                     params.FilterType = Enum.RaycastFilterType.Exclude
                     local ignored = {camera}
                     if LocalPlayer.Character then table.insert(ignored, LocalPlayer.Character) end
-                    params.FilterDescendantsInstances = ignored
-                    local hit = workspace:Raycast(camera.CFrame.Position, part.Position - camera.CFrame.Position, params)
-                    clear = not hit or hit.Instance:IsDescendantOf(character)
+                    clear = false
+                    for _ = 1, 12 do
+                        params.FilterDescendantsInstances = ignored
+                        local hit = workspace:Raycast(camera.CFrame.Position, part.Position - camera.CFrame.Position, params)
+                        if not hit or hit.Instance:IsDescendantOf(character) then clear = true; break end
+                        local blocker = hit.Instance
+                        if Config.AimIgnoreEffects and not playerForHit(blocker) and blocker:IsA("BasePart")
+                            and not blocker.CanCollide and blocker.Name ~= "Armor" then
+                            table.insert(ignored, blocker)
+                        else
+                            break
+                        end
+                    end
                 end
                 if clear then closest, distance = part, screenDistance end
             end
         end
     end
     if closest then
+        circleStroke.Color = Color3.fromRGB(255, 100, 100)
+        if Config.Tracer then
+            local point = camera:WorldToScreenPoint(closest.Position)
+            local delta = Vector2.new(point.X, point.Y) - cursor
+            tracer.Visible, tracer.Position = true, UDim2.fromOffset(cursor.X, cursor.Y)
+            tracer.Size = UDim2.fromOffset(delta.Magnitude, 1)
+            tracer.Rotation = math.deg(math.atan2(delta.Y, delta.X))
+        end
         local goal = CFrame.lookAt(camera.CFrame.Position, closest.Position)
         local alpha = Config.Smoothing <= 0 and 1 or 1 - math.exp(-dt / Config.Smoothing)
         camera.CFrame = camera.CFrame:Lerp(goal, alpha)
     end
-end)
+end
+-- Run after the camera and most weapon viewmodel updates.
+RunService:BindToRenderStep(aimRenderName, Enum.RenderPriority.Last.Value + 1, renderAim)
 -- Self-contained UI adapter used if Rayfield or its remote asset cannot load.
 local function fallbackLibrary(reason)
     local library = {visible = true, Flags = {}, IsFallback = true}
@@ -529,14 +612,18 @@ local function fallbackLibrary(reason)
                 input.Text, input.TextSize = tostring(settings.CurrentValue), 14
                 input.TextColor3, input.BackgroundColor3 = Color3.new(1, 1, 1), Color3.fromRGB(60, 63, 78)
                 input.Parent = frame
+                local control = {}
+                function control:Set(value)
+                    value = math.clamp(value, settings.Range[1], settings.Range[2])
+                    settings.CurrentValue, input.Text = value, tostring(value)
+                    settings.Callback(value)
+                end
                 connections[#connections + 1] = input.FocusLost:Connect(function()
                     local value = tonumber(input.Text)
-                    if value then
-                        value = math.clamp(value, settings.Range[1], settings.Range[2])
-                        settings.CurrentValue = value; settings.Callback(value)
-                    end
+                    if value then control:Set(value) end
                     input.Text = tostring(settings.CurrentValue)
                 end)
+                return control
             end
             function tab:CreateDropdown(settings)
                 local frame = row(settings.Name)
@@ -648,7 +735,7 @@ local guiOK, guiError = pcall(function()
         end
     end
     local function slider(tab, name, property, minimum, maximum, increment)
-        tab:CreateSlider({Name = name, Range = {minimum, maximum}, Increment = increment or 1,
+        return tab:CreateSlider({Name = name, Range = {minimum, maximum}, Increment = increment or 1,
             CurrentValue = Config[property], Flag = "HD_" .. property,
             Callback = function(value) Config[property] = value end})
     end
@@ -657,6 +744,7 @@ local guiOK, guiError = pcall(function()
     toggle(aim, "Always on (no hold required)", "AimAlways")
     toggle(aim, "Team check", "TeamCheck")
     toggle(aim, "Wall check", "WallCheck")
+    toggle(aim, "Skip non-collidable effects", "AimIgnoreEffects")
     slider(aim, "Aim radius (pixels)", "Radius", 20, 600)
     slider(aim, "Smoothing (seconds)", "Smoothing", 0, 0.5, 0.01)
     toggle(aim, "Show aim circle", "ShowFOV")
@@ -673,6 +761,8 @@ local guiOK, guiError = pcall(function()
         end})
     local combat = window:CreateTab("Trigger & Hitboxes")
     toggle(combat, "Triggerbot", "Trigger", "Trigger")
+    toggle(combat, "Skip non-collidable effects", "TriggerIgnoreEffects")
+    toggle(combat, "Show live trigger status", "TriggerDebug")
     triggerStatus = combat:CreateLabel("Trigger: off")
     combat:CreateDropdown({Name = "Fire method", Options = {"Auto", "Mouse", "Tool"},
         CurrentOption = {Config.TriggerMode}, Flag = "HD_TriggerMode",
@@ -680,8 +770,14 @@ local guiOK, guiError = pcall(function()
     combat:CreateDropdown({Name = "Crosshair position", Options = {"Auto", "Center", "Cursor"},
         CurrentOption = {Config.TriggerPoint}, Flag = "HD_TriggerPoint",
         Callback = function(options) Config.TriggerPoint = options[1] end})
-    slider(combat, "Trigger delay (seconds)", "TriggerDelay", 0, 1, 0.01)
-    slider(combat, "Shot interval (seconds)", "FireInterval", 0.05, 1, 0.01)
+    local delayControl = slider(combat, "Trigger delay (seconds)", "TriggerDelay", 0, 1, 0.01)
+    local intervalControl = slider(combat, "Shot interval (seconds)", "FireInterval", 0.03, 1, 0.01)
+    combat:CreateButton({Name = "Apply fast trigger preset", Callback = function()
+        Config.TriggerDelay, Config.FireInterval = 0, 0.06
+        if delayControl then delayControl:Set(0) end
+        if intervalControl then intervalControl:Set(0.06) end
+        aimedAt, aimedSince, lastShot = nil, 0, 0
+    end})
     toggle(combat, "Expand enemy root hitboxes", "Hitboxes", "Hitboxes")
     slider(combat, "Hitbox size (studs)", "HitboxSize", 2, 20)
     slider(combat, "Trigger / hitbox range (studs)", "MaxDistance", 50, 5000, 50)
@@ -713,9 +809,9 @@ local guiOK, guiError = pcall(function()
     Rayfield:LoadConfiguration()
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 5: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 6: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 5: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 6: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
