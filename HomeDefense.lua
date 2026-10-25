@@ -12,7 +12,7 @@ local Config = {
     AimPart = "Head", Radius = 150, Smoothing = 0.08,
     Trigger = false, TriggerDelay = 0, FireInterval = 0.06,
     TriggerMode = "Auto", TriggerPoint = "Auto",
-    TriggerIgnoreEffects = true, TriggerDebug = true,
+    TriggerIgnoreEffects = true,
     Hitboxes = false, HitboxSize = 6, Highlights = false,
     MaxDistance = 1500, ShowFOV = true, Tracer = false,
     ESPNames = true, ESPHealth = true, ESPDistance = true, ESPTeamColors = true,
@@ -28,7 +28,7 @@ local LocalPlayer = Players.LocalPlayer
 local connections, originals, highlights = {}, {}, {}
 local Rayfield, uiToggles
 local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
-local triggerHud, aimHud, lastTriggerMessage
+local aimHud
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
@@ -67,7 +67,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 7: starting..."
+bootText.Text = "Home Defense build 8: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -205,11 +205,6 @@ end
 
 local mouse = LocalPlayer:GetMouse()
 local function status(message)
-    if triggerHud then
-        triggerHud.Visible = Config.Trigger and Config.TriggerDebug
-        triggerHud.Text = "Trigger: " .. message
-    end
-    lastTriggerMessage = message
     if triggerStatus and message ~= triggerStatus.LastMessage then
         triggerStatus.LastMessage = message
         triggerStatus:Set("Trigger: " .. message)
@@ -475,13 +470,6 @@ circleStroke.Thickness, circleStroke.Color, circleStroke.Parent = 1.5, Color3.ne
 local tracer = Instance.new("Frame")
 tracer.AnchorPoint, tracer.BorderSizePixel, tracer.Visible = Vector2.new(0, 0.5), 0, false
 tracer.BackgroundColor3, tracer.Parent = Color3.fromRGB(255, 100, 100), aimGui
-triggerHud = Instance.new("TextLabel")
-triggerHud.Name, triggerHud.Size = "TriggerStatus", UDim2.fromOffset(500, 30)
-triggerHud.Position = UDim2.new(0.5, -250, 1, -75)
-triggerHud.BackgroundTransparency, triggerHud.TextStrokeTransparency = 1, 0.25
-triggerHud.Font, triggerHud.TextSize = Enum.Font.GothamMedium, 14
-triggerHud.TextColor3, triggerHud.Parent = Color3.new(1, 1, 1), aimGui
-triggerHud.Visible, triggerHud.Text = false, "Trigger: off"
 aimHud = Instance.new("TextLabel")
 aimHud.Name, aimHud.Size = "AimStatus", UDim2.fromOffset(600, 30)
 aimHud.Position = UDim2.new(0.5, -300, 1, -105)
@@ -818,7 +806,6 @@ local guiOK, guiError = pcall(function()
     local combat = window:CreateTab("Trigger & Hitboxes")
     toggle(combat, "Triggerbot", "Trigger", "Trigger")
     toggle(combat, "Skip non-collidable effects", "TriggerIgnoreEffects")
-    toggle(combat, "Show live trigger status", "TriggerDebug")
     triggerStatus = combat:CreateLabel("Trigger: off")
     combat:CreateDropdown({Name = "Fire method", Options = {"Auto", "Mouse", "Tool"},
         CurrentOption = {Config.TriggerMode}, Flag = "HD_TriggerMode",
@@ -865,9 +852,9 @@ local guiOK, guiError = pcall(function()
     Rayfield:LoadConfiguration()
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 7: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 8: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 7: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 8: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
