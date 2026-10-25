@@ -8,13 +8,14 @@ if env.HomeDefenseHelper then pcall(env.HomeDefenseHelper.Unload) end
 
 local Config = {
     Aim = true, AimAlways = false, TeamCheck = true, WallCheck = true, AimIgnoreEffects = true,
-    AimOrigin = "Auto", PauseAimWithMenu = false, AimDebug = true,
+    AimOrigin = "Auto", PauseAimWithMenu = false,
     AimPart = "Auto", Radius = 150, Smoothing = 0.04,
     StickyAim = true, AimPrediction = false, PredictionTime = 0.08,
     Trigger = false, TriggerDelay = 0, FireInterval = 0.06,
     TriggerMode = "Auto", TriggerPoint = "Auto",
     TriggerIgnoreEffects = true,
-    Hitboxes = false, HitboxSize = 6, Highlights = false,
+    Hitboxes = false, HitboxSize = 6, HitboxPart = "Head", HitboxTransparency = 0.75,
+    HitboxWallCheck = true, Highlights = false,
     MaxDistance = 1500, ShowFOV = true, Tracer = false,
     ESPNames = true, ESPHealth = true, ESPDistance = true, ESPTeamColors = true,
     ESPTeamCheck = true, ESPThroughWalls = true, ESPBoxes = false,
@@ -30,7 +31,6 @@ local LocalPlayer = Players.LocalPlayer
 local connections, originals, highlights = {}, {}, {}
 local Rayfield, uiToggles
 local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
-local aimHud
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
@@ -69,7 +69,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 12: starting..."
+bootText.Text = "Home Defense build 13: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -132,9 +132,11 @@ local function enemy(player)
 end
 local deadHumanoids = setmetatable({}, {__mode = "k"})
 local watchedHumanoids = setmetatable({}, {__mode = "k"})
+local restore
 local function markDead(character, humanoid)
     deadHumanoids[humanoid] = true
     if aimLock and aimLock.Character == character then aimLock = nil end
+    for part in pairs(originals) do if part:IsDescendantOf(character) then restore(part) end end
     if aimedCharacter == character or (aimedAt and aimedAt.Character == character) then
         aimedAt, aimedCharacter, aimedSince = nil, nil, 0
         releaseFire()
@@ -160,13 +162,14 @@ local function living(player)
     end
     return not deadHumanoids[humanoid] and character or nil
 end
-local function restore(part)
+restore = function(part)
     local old = originals[part]
     if old then
         pcall(function()
             part.Size = old.Size
             part.Transparency = old.Transparency
             part.CanCollide = old.CanCollide
+            part.CanQuery = old.CanQuery
         end)
         originals[part] = nil
     end
@@ -251,6 +254,26 @@ local function playerForHit(instance)
         end
         ancestor = ancestor.Parent
     end
+end
+local function hitboxVisible(part, character, camera)
+    if not Config.HitboxWallCheck then return true end
+    local params = RaycastParams.new()
+    params.FilterType, params.IgnoreWater = Enum.RaycastFilterType.Exclude, true
+    local ignored = localIgnoreList(camera)
+    -- Exclude the target's enlarged geometry so it cannot hide a wall from this check.
+    table.insert(ignored, character)
+    for _ = 1, 12 do
+        params.FilterDescendantsInstances = ignored
+        local hit = workspace:Raycast(camera.CFrame.Position, part.Position - camera.CFrame.Position, params)
+        if not hit then return true end
+        local blocker = hit.Instance
+        if not playerForHit(blocker) and blocker:IsA("BasePart") and not blocker.CanCollide and blocker.Name ~= "Armor" then
+            table.insert(ignored, blocker)
+        else
+            return false
+        end
+    end
+    return false
 end
 local function triggerTarget()
     local camera = workspace.CurrentCamera
@@ -438,13 +461,26 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         local camera = workspace.CurrentCamera
         local inRange = root and camera and (root.Position - camera.CFrame.Position).Magnitude <= Config.MaxDistance
         if inRange and enemy(player) and Config.Hitboxes then
-            keepParts[root] = true
-            originals[root] = originals[root] or {
-                Size = root.Size, Transparency = root.Transparency, CanCollide = root.CanCollide,
-            }
-            root.Size = Vector3.one * math.clamp(Config.HitboxSize, 2, 20)
-            root.Transparency = 0.75
-            root.CanCollide = false
+            local parts = {}
+            if Config.HitboxPart == "Head" or Config.HitboxPart == "Both" then
+                local head = character:FindFirstChild("Head")
+                if head then table.insert(parts, head) end
+            end
+            if Config.HitboxPart == "Torso" or Config.HitboxPart == "Both" then
+                local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+                if torso then table.insert(parts, torso) end
+            end
+            for _, part in ipairs(parts) do
+                if part:IsA("BasePart") and hitboxVisible(part, character, camera) then
+                    keepParts[part] = true
+                    originals[part] = originals[part] or {Size = part.Size, Transparency = part.Transparency,
+                        CanCollide = part.CanCollide, CanQuery = part.CanQuery}
+                    local size, original = math.clamp(Config.HitboxSize, 2, 20), originals[part].Size
+                    part.Size = Vector3.new(math.max(original.X, size), math.max(original.Y, size), math.max(original.Z, size))
+                    part.Transparency = math.clamp(Config.HitboxTransparency, 0, 0.95)
+                    part.CanQuery = true
+                end
+            end
         end
         local espRange = root and camera and (root.Position - camera.CFrame.Position).Magnitude <= Config.ESPDistanceLimit
         if espRange and Config.Highlights and (not Config.ESPTeamCheck or enemy(player)) then
@@ -518,15 +554,6 @@ circleStroke.Thickness, circleStroke.Color, circleStroke.Parent = 1.5, Color3.ne
 local tracer = Instance.new("Frame")
 tracer.AnchorPoint, tracer.BorderSizePixel, tracer.Visible = Vector2.new(0, 0.5), 0, false
 tracer.BackgroundColor3, tracer.Parent = Color3.fromRGB(255, 100, 100), aimGui
-aimHud = Instance.new("TextLabel")
-aimHud.Name, aimHud.Size = "AimStatus", UDim2.fromOffset(600, 30)
-aimHud.Position = UDim2.new(0.5, -300, 1, -105)
-aimHud.BackgroundTransparency, aimHud.TextStrokeTransparency = 1, 0.25
-aimHud.Font, aimHud.TextSize = Enum.Font.GothamMedium, 14
-aimHud.TextColor3, aimHud.Parent = Color3.new(1, 1, 1), aimGui
-local function aimMessage(message)
-    aimHud.Visible, aimHud.Text = Config.AimDebug, "Aim: " .. message
-end
 local function renderAim(dt)
     if not active then return end
     local camera = workspace.CurrentCamera
@@ -543,15 +570,14 @@ local function renderAim(dt)
     aimCircle.Size = UDim2.fromOffset(Config.Radius * 2, Config.Radius * 2)
     circleStroke.Color = Color3.new(1, 1, 1)
     tracer.Visible = false
-    if not Config.Aim then aimLock = nil; aimMessage("off"); return end
-    if capturingKey or Input:GetFocusedTextBox() then aimLock = nil; aimMessage("paused while editing"); return end
-    if Config.PauseAimWithMenu and Rayfield and Rayfield:IsVisible() then aimLock = nil; aimMessage("paused: menu open"); return end
+    if not Config.Aim then aimLock = nil; return end
+    if capturingKey or Input:GetFocusedTextBox() then aimLock = nil; return end
+    if Config.PauseAimWithMenu and Rayfield and Rayfield:IsVisible() then aimLock = nil; return end
     if not Config.AimAlways then
         local held = keys.Aim.EnumType == Enum.UserInputType and Input:IsMouseButtonPressed(keys.Aim)
             or keys.Aim.EnumType == Enum.KeyCode and Input:IsKeyDown(keys.Aim)
-        if not held then aimLock = nil; aimMessage("hold " .. keys.Aim.Name .. " or enable Always on"); return end
+        if not held then aimLock = nil; return end
     end
-    local insideCircle, wallBlocked = 0, 0
     local function candidate(player)
         local character = enemy(player) and living(player)
         if not character then return end
@@ -563,7 +589,6 @@ local function renderAim(dt)
             local point, visible = camera:WorldToViewportPoint(part.Position)
             local screenDistance = (Vector2.new(point.X, point.Y) - cursor).Magnitude
             if visible and screenDistance <= Config.Radius then
-                insideCircle = insideCircle + 1
                 local clear = true
                 if Config.WallCheck then
                     local params = RaycastParams.new()
@@ -585,7 +610,7 @@ local function renderAim(dt)
                 end
                 if clear then
                     return {Part = part, Player = player, Character = character, Distance = screenDistance}
-                else wallBlocked = wallBlocked + 1 end
+                end
             end
             end
         end
@@ -614,7 +639,6 @@ local function renderAim(dt)
                 aimPosition = aimPosition + velocity * math.clamp(Config.PredictionTime, 0, 0.25)
             end
         end
-        aimMessage((Config.AimAlways and "always on: " or "tracking: ") .. selected.Player.Name .. " / " .. closest.Name)
         circleStroke.Color = Color3.fromRGB(255, 100, 100)
         if Config.Tracer then
             local point = camera:WorldToViewportPoint(aimPosition)
@@ -626,8 +650,6 @@ local function renderAim(dt)
         local goal = CFrame.lookAt(camera.CFrame.Position, aimPosition)
         local alpha = Config.Smoothing <= 0 and 1 or 1 - math.exp(-math.max(dt, 0) / Config.Smoothing)
         camera.CFrame = camera.CFrame:Lerp(goal, alpha)
-    else
-        aimMessage(wallBlocked > 0 and "target blocked by wall" or (insideCircle == 0 and "no eligible player inside circle" or "no visible target"))
     end
 end
 local function recoilNote(message)
@@ -901,7 +923,6 @@ local guiOK, guiError = pcall(function()
     toggle(aim, "Always on (no hold required)", "AimAlways")
     toggle(aim, "Keep current target while valid", "StickyAim")
     toggle(aim, "Pause aim while menu open", "PauseAimWithMenu")
-    toggle(aim, "Show live aim status", "AimDebug")
     aim:CreateDropdown({Name = "Aim circle position", Options = {"Auto", "Center", "Cursor"},
         CurrentOption = {Config.AimOrigin}, Flag = "HD_AimOrigin",
         Callback = function(options) Config.AimOrigin = options[1] end})
@@ -953,8 +974,14 @@ local guiOK, guiError = pcall(function()
         if intervalControl then intervalControl:Set(0.06) end
         aimedAt, aimedSince, lastShot = nil, 0, 0
     end})
-    toggle(combat, "Expand enemy root hitboxes", "Hitboxes", "Hitboxes")
+    toggle(combat, "Expand enemy hitboxes", "Hitboxes", "Hitboxes")
+    toggle(combat, "Hitbox wall check", "HitboxWallCheck")
+    combat:CreateDropdown({Name = "Expand body part", Options = {"Head", "Torso", "Both"},
+        CurrentOption = {Config.HitboxPart}, Flag = "HD_HitboxPart",
+        Callback = function(options) Config.HitboxPart = options[1] end})
     slider(combat, "Hitbox size (studs)", "HitboxSize", 2, 20)
+    slider(combat, "Expanded part transparency", "HitboxTransparency", 0, 0.95, 0.05)
+    combat:CreateParagraph({Title = "Hitbox compatibility", Content = "Expands recognized Head/Torso parts and enables ray queries. Collision settings stay original. Resets on death, team/range changes, disable or unload. Client-side geometry changes may still be rejected by server hit validation."})
     slider(combat, "Trigger / hitbox range (studs)", "MaxDistance", 50, 5000, 50)
     combat:CreateParagraph({Title = "Trigger troubleshooting", Content = "Hide the menu to fire. Auto prefers mouse input; try Tool if mouse input is unavailable. If your gun uses a fixed crosshair, choose Center. Status shows detected targets and input attempts, not confirmed damage."})
     local esp = window:CreateTab("ESP")
@@ -978,7 +1005,7 @@ local guiOK, guiError = pcall(function()
     recoilStatus = recoilTab:CreateLabel("Recoil: Off")
     recoilTab:CreateParagraph({Title = "Camera-only dampener", Content = "Disabled by default. Smooths camera rotation while firing with the mouse stationary; pauses during mouse movement. Leaves weapon settings, animation recoil, spread and equip logic alone. Reloading restores the previous version's recoil settings."})
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v12", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    settings:CreateParagraph({Title = "Home Defense v13", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
     settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
@@ -992,9 +1019,9 @@ local guiOK, guiError = pcall(function()
     if uiToggles.RecoilEnabled then uiToggles.RecoilEnabled:Set(false) end
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 12: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 13: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 12: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 13: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
