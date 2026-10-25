@@ -19,7 +19,7 @@ local Config = {
     ESPTeamCheck = true, ESPThroughWalls = true, ESPBoxes = false,
     ESPDistanceLimit = 1500, ESPTextSize = 14, Fullbright = false,
     CameraOverride = false, CameraFOV = 80,
-    RecoilEnabled = false, RecoilStrength = 60, RecoilGun = true,
+    RecoilEnabled = false, RecoilStrength = 60,
 }
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -68,7 +68,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "Home Defense build 9: starting..."
+bootText.Text = "Home Defense build 10: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -98,6 +98,8 @@ local Aimbot
 local nativeAimbot = false
 local aimGui
 local aimRenderName = "HomeDefenseAimRender"
+local recoilRenderName = "HomeDefenseRecoilRender"
+local recoilStatus, recoilCamera, recoilPrevious, recoilMessage
 local localRigs = setmetatable({}, {__mode = "k"})
 local function isSelfPlayer(player)
     if not player then return false end
@@ -119,58 +121,6 @@ local function localIgnoreList(camera)
     local ignored = {camera}
     for rig in pairs(localRigs) do table.insert(ignored, rig) end
     return ignored
-end
-local recoil = {Config = nil, Original = {}, Written = {}, Reading = false, NextRead = 0, Message = "Off"}
-local recoilStatus
-local function restoreRecoil()
-    if recoil.Config then
-        for property, original in pairs(recoil.Original) do
-            if recoil.Config[property] == recoil.Written[property] then
-                pcall(function() recoil.Config[property] = original end)
-            end
-        end
-    end
-    recoil.Config, recoil.Original, recoil.Written, recoil.NextRead = nil, {}, {}, 0
-end
-local function updateRecoil(now)
-    if not Config.RecoilEnabled then
-        restoreRecoil()
-        recoil.Message = "Off"
-    elseif not recoil.Config and not recoil.Reading and now >= recoil.NextRead then
-        recoil.Reading, recoil.NextRead, recoil.Message = true, now + 2, "Finding ACS recoil settings..."
-        local ok, result = bounded("ACS recoil settings", 5, function()
-            local storage = game:GetService("ReplicatedStorage")
-            local engine = storage:FindFirstChild("ACS_Engine")
-            local rules = engine and engine:FindFirstChild("GameRules")
-            local module = rules and rules:FindFirstChild("Config")
-            assert(module and module:IsA("ModuleScript"), "ACS GameRules.Config unavailable")
-            local settings = require(module)
-            assert(type(settings) == "table" and type(settings.CameraRecoilScale) == "number"
-                and type(settings.GunRecoilScale) == "number", "Unsupported ACS recoil settings")
-            return settings
-        end)
-        recoil.Reading = false
-        if not active or not Config.RecoilEnabled then return end
-        if ok then
-            recoil.Config = result
-            recoil.Original = {CameraRecoilScale = result.CameraRecoilScale, GunRecoilScale = result.GunRecoilScale}
-        else
-            recoil.Message = tostring(result)
-        end
-    end
-    if Config.RecoilEnabled and recoil.Config then
-        local multiplier = 1 - math.clamp(Config.RecoilStrength, 0, 100) / 100
-        local ok, err = pcall(function()
-            local camera = recoil.Original.CameraRecoilScale * multiplier
-            local weapon = recoil.Original.GunRecoilScale * (Config.RecoilGun and multiplier or 1)
-            recoil.Config.CameraRecoilScale = camera
-            recoil.Written.CameraRecoilScale = camera
-            recoil.Config.GunRecoilScale = weapon
-            recoil.Written.GunRecoilScale = weapon
-        end)
-        recoil.Message = ok and ("Applied: " .. Config.RecoilStrength .. "% reduction") or ("Cannot apply: " .. tostring(err))
-    end
-    if recoilStatus then recoilStatus:Set("Recoil: " .. recoil.Message) end
 end
 local function enemy(player)
     return not isSelfPlayer(player) and (not Config.TeamCheck
@@ -196,10 +146,10 @@ end
 local function unload()
     if not active then return end
     active = false
-    restoreRecoil()
     releaseFire()
     for _, connection in ipairs(connections) do connection:Disconnect() end
     pcall(function() RunService:UnbindFromRenderStep(aimRenderName) end)
+    pcall(function() RunService:UnbindFromRenderStep(recoilRenderName) end)
     if aimGui then aimGui:Destroy() end
     for part in pairs(originals) do restore(part) end
     for _, visual in pairs(highlights) do
@@ -373,10 +323,14 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     local now = os.clock()
     if releaseAt and now >= releaseAt then releaseFire(); releaseAt = nil end
     local blocked = capturingKey or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
-    local target = Config.Trigger and not blocked and triggerTarget() or nil
+    local equippedTool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    local target = Config.Trigger and equippedTool and not blocked and triggerTarget() or nil
     if not Config.Trigger or blocked then
         releaseFire()
         status(Config.Trigger and "paused: hide menu to fire" or "off")
+    elseif not equippedTool then
+        releaseFire()
+        status("equip a weapon")
     end
     if target ~= aimedAt then aimedAt, aimedSince = target, now end
     if target and isSelfPlayer(target) then
@@ -391,7 +345,10 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
         local canClick = type(mouse1press) == "function" and type(mouse1release) == "function"
         local canSingleClick = type(mouse1click) == "function"
         if mode == "Auto" then mode = (canClick or canSingleClick) and "Mouse" or "Tool" end
-        if mode == "Mouse" and (canClick or canSingleClick) then
+        if not tool then
+            releaseFire()
+            status("equip a weapon")
+        elseif mode == "Mouse" and (canClick or canSingleClick) then
             local fired, err = pcall(function()
                 if canClick then mouse1press(); fireHeld = true; releaseAt = now + 0.02
                 else mouse1click() end
@@ -409,7 +366,6 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     elapsed = elapsed + dt
     if elapsed < 0.1 then return end
     elapsed = 0
-    updateRecoil(now)
     -- One local render path drives both hold-to-aim and always-on aiming.
     Aimbot.Settings.Enabled = false
     Aimbot.Settings.TeamCheck = Config.TeamCheck
@@ -540,10 +496,11 @@ local function renderAim(dt)
     local camera = workspace.CurrentCamera
     if not camera then return end
     local cursor = Input:GetMouseLocation()
-    if Config.AimOrigin == "Center" or (Config.AimOrigin == "Auto" and
-        (Config.AimAlways or Input.MouseBehavior == Enum.MouseBehavior.LockCenter)) then
-        local center = camera:WorldToScreenPoint(camera.CFrame.Position + camera.CFrame.LookVector * 100)
-        cursor = Vector2.new(center.X, center.Y)
+    -- GUI and target projection both use viewport coordinates, with no top-bar inset.
+    -- Always-on is centered even when an older saved setting says Cursor.
+    if Config.AimAlways or Config.AimOrigin == "Center" or (Config.AimOrigin == "Auto" and
+        Input.MouseBehavior == Enum.MouseBehavior.LockCenter) then
+        cursor = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
     end
     aimCircle.Visible = Config.Aim and Config.ShowFOV
     aimCircle.Position = UDim2.fromOffset(cursor.X, cursor.Y)
@@ -564,7 +521,7 @@ local function renderAim(dt)
         local character = enemy(player) and living(player)
         local part = character and (character:FindFirstChild(Config.AimPart) or character:FindFirstChild("HumanoidRootPart"))
         if part then
-            local point, visible = camera:WorldToScreenPoint(part.Position)
+            local point, visible = camera:WorldToViewportPoint(part.Position)
             local screenDistance = (Vector2.new(point.X, point.Y) - cursor).Magnitude
             if visible and screenDistance < distance then
                 insideCircle = insideCircle + 1
@@ -595,7 +552,7 @@ local function renderAim(dt)
         aimMessage((Config.AimAlways and "always on: " or "tracking: ") .. closest.Parent.Name)
         circleStroke.Color = Color3.fromRGB(255, 100, 100)
         if Config.Tracer then
-            local point = camera:WorldToScreenPoint(closest.Position)
+            local point = camera:WorldToViewportPoint(closest.Position)
             local delta = Vector2.new(point.X, point.Y) - cursor
             tracer.Visible, tracer.Position = true, UDim2.fromOffset(cursor.X, cursor.Y)
             tracer.Size = UDim2.fromOffset(delta.Magnitude, 1)
@@ -608,7 +565,40 @@ local function renderAim(dt)
         aimMessage(wallBlocked > 0 and "target blocked by wall" or (insideCircle == 0 and "no eligible player inside circle" or "no visible target"))
     end
 end
+local function recoilNote(message)
+    if recoilStatus and recoilMessage ~= message then recoilStatus:Set("Recoil: " .. message) end
+    recoilMessage = message
+end
+local function renderRecoil()
+    local camera = workspace.CurrentCamera
+    if not active or not camera then return end
+    local current = camera.CFrame
+    if camera ~= recoilCamera then recoilCamera, recoilPrevious = camera, current; return end
+    local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
+    local firing = Input:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        or fireHeld or heldTool ~= nil or (lastShot > 0 and os.clock() - lastShot < 0.12)
+    local blocked = not Config.RecoilEnabled or not tool or not firing or capturingKey
+        or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
+    if blocked then
+        recoilPrevious = current
+        recoilNote(not Config.RecoilEnabled and "Off" or (not tool and "Equip a weapon" or "Ready - camera only"))
+        return
+    end
+    -- Do not damp deliberate mouse movement. No weapon modules, equip state,
+    -- shared configuration or game input bindings are changed by this method.
+    if Input:GetMouseDelta().Magnitude > 0.05 then
+        recoilPrevious = current
+        recoilNote("Paused while moving mouse")
+        return
+    end
+    local multiplier = 1 - math.clamp(Config.RecoilStrength, 0, 100) / 100
+    local rotation = recoilPrevious.Rotation:Lerp(current.Rotation, multiplier)
+    camera.CFrame = CFrame.new(current.Position) * rotation
+    recoilPrevious = camera.CFrame
+    recoilNote("Camera smoothing: " .. Config.RecoilStrength .. "%")
+end
 -- Run after the camera and most weapon viewmodel updates.
+RunService:BindToRenderStep(recoilRenderName, Enum.RenderPriority.Last.Value, renderRecoil)
 RunService:BindToRenderStep(aimRenderName, Enum.RenderPriority.Last.Value + 1, renderAim)
 -- Self-contained UI adapter used if Rayfield or its remote asset cannot load.
 local function fallbackLibrary(reason)
@@ -898,12 +888,11 @@ local guiOK, guiError = pcall(function()
     slider(visuals, "Camera FOV", "CameraFOV", 40, 120)
     local recoilTab = window:CreateTab("Recoil")
     toggle(recoilTab, "Recoil dampener", "RecoilEnabled", "Recoil")
-    slider(recoilTab, "Recoil reduction (%)", "RecoilStrength", 0, 100, 5)
-    toggle(recoilTab, "Also reduce weapon animation recoil", "RecoilGun")
+    slider(recoilTab, "Camera smoothing (%)", "RecoilStrength", 0, 100, 5)
     recoilStatus = recoilTab:CreateLabel("Recoil: Off")
-    recoilTab:CreateParagraph({Title = "ACS recoil", Content = "0% keeps original recoil; 100% removes the scaled recoil contribution. Applies to new shots; existing spring motion settles naturally. Disabling or unloading restores original scales. This does not change bullet spread."})
+    recoilTab:CreateParagraph({Title = "Camera-only dampener", Content = "Disabled by default. Smooths camera rotation while firing with the mouse stationary; pauses during mouse movement. Leaves weapon settings, animation recoil, spread and equip logic alone. Reloading restores the previous version's recoil settings."})
     local settings = window:CreateTab("Settings")
-    settings:CreateParagraph({Title = "Home Defense v9", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
+    settings:CreateParagraph({Title = "Home Defense v10", Content = "Click key badges to rebind; Escape cancels. F1 toggles the menu. Always-on uses screen center in Auto mode. Menu pause for aim is optional; trigger pauses while the menu is open. Live status explains target selection."})
     settings:CreateButton({Name = "Hide / show menu", Callback = function() Rayfield:SetVisibility(not Rayfield:IsVisible()) end})
     pcall(attachKey, "Hide / show menu", "Menu")
     settings:CreateKeybind({Name = "Unload key", CurrentKeybind = keys.Unload.Name, CallOnChange = true,
@@ -912,11 +901,14 @@ local guiOK, guiError = pcall(function()
         end})
     settings:CreateButton({Name = "Unload and restore changes", Callback = unload})
     Rayfield:LoadConfiguration()
+    -- Do not reactivate the previous shared-settings dampener through saved flags.
+    Config.RecoilEnabled = false
+    if uiToggles.RecoilEnabled then uiToggles.RecoilEnabled:Set(false) end
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
-        bootMessage("Home Defense build 9: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
+        bootMessage("Home Defense build 10: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Settings are not saved in this fallback.")
     else
-        bootMessage("Home Defense build 9: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
+        bootMessage("Home Defense build 10: Rayfield loaded. F1 toggles the menu by default. " .. (nativeAimbot and "" or "Compatible aim mode active."))
     end
     task.delay(7, function() if bootGui.Parent then bootGui:Destroy() end end)
 end)
