@@ -1316,6 +1316,8 @@ local guiOK, guiError = pcall(function()
     settings:CreateSection("Session")
     settings:CreateButton({Name="Unload & restore changes",Callback=unload})
     configReady = true
+    -- Create the config on first startup and preserve loaded settings.
+    if Config.AutoSave then saveSettings(false) end
     Rayfield:SetVisibility(true)
     if Rayfield.IsFallback then
         bootMessage("HUSH build 17: compatible menu loaded. F1 hide/show. Type numeric values; click dropdowns to cycle choices. Workspace config is available in Settings.")
