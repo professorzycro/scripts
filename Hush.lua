@@ -23,7 +23,7 @@ local Config = {
     ESPDistanceLimit = 1500, ESPTextSize = 14, Fullbright = false,
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
-    MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
+    MotherESP=false, MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
     WorldESPRange=1200, WorldESPMax=150, ThreatWarning=true,
     AutoSave = true,
 }
@@ -1006,15 +1006,16 @@ worldFolder.Name="HushWorldMarkers"
 worldFolder.Parent=workspace
 local worldStatus
 local worldGroups={
-    {"Monsters","MonsterESP",Color3.fromRGB(255,85,85)},
-    {"Watchers","WatcherESP",Color3.fromRGB(255,140,80)},
-    {"Sentries","SentryESP",Color3.fromRGB(255,180,70)},
-    {"WorldFinds","LootESP",Color3.fromRGB(100,255,150)},
-    {"LootBags","LootESP",Color3.fromRGB(100,255,150)},
-    {"Lockboxes","LootESP",Color3.fromRGB(100,255,150)},
-    {"SupplyDrops","SupplyESP",Color3.fromRGB(90,180,255)},
-    {"Exits","ExitESP",Color3.fromRGB(160,140,255)},
-    {"NoiseTraps","TrapESP",Color3.fromRGB(255,230,80)},
+    {"Monsters","MonsterESP",Color3.fromRGB(255,0,0),"Listeners"},
+    {"Watchers","WatcherESP",Color3.fromRGB(255,255,0),"Watchers"},
+    {"Sentries","SentryESP",Color3.fromRGB(255,140,0),"Sentries"},
+    {"Mother","MotherESP",Color3.fromRGB(160,70,255),"Mother",true},
+    {"WorldFinds","LootESP",Color3.fromRGB(150,150,150),"Loot"},
+    {"LootBags","LootESP",Color3.fromRGB(150,150,150),"Loot bags"},
+    {"Lockboxes","LootESP",Color3.fromRGB(150,150,150),"Lockboxes"},
+    {"SupplyDrops","SupplyESP",Color3.fromRGB(139,90,43),"Supply drops"},
+    {"Exits","ExitESP",Color3.fromRGB(0,255,0),"Extraction"},
+    {"NoiseTraps","TrapESP",Color3.fromRGB(255,105,180),"Noise traps"},
 }
 local function removeWorld(object)
     local marker=worldMarkers[object]
@@ -1036,7 +1037,9 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
     for _,group in ipairs(worldGroups) do
         local folder=Config[group[2]] and workspace:FindFirstChild(group[1])
         if folder then
-            for _,object in ipairs(folder:GetChildren()) do
+            -- Mother is one workspace model; the other groups are containers.
+            local objects=group[5] and {folder} or folder:GetChildren()
+            for _,object in ipairs(objects) do
                 local anchor=object:IsA("BasePart") and object or object:FindFirstChild("Head",true)
                     or object:FindFirstChild("HumanoidRootPart",true) or object:FindFirstChildWhichIsA("BasePart",true)
                 local hum=object:FindFirstChildOfClass("Humanoid")
@@ -1070,13 +1073,14 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
             end
         end
         marker.gui.Adornee=c.anchor
-        marker.text.TextColor3=Color3.new(1, 1, 1)
+        marker.text.TextColor3=c.group[3]
         local state=object:GetAttribute("State")
         local health=object:FindFirstChildOfClass("Humanoid")
-        marker.text.Text=object.Name.." ["..c.group[1].."] "..math.floor(c.distance).." studs"
+        local displayName=c.group[1]=="Monsters" and "Listener" or object.Name
+        marker.text.Text=displayName.." ["..c.group[4].."] "..math.floor(c.distance).." studs"
             ..(state and "\n"..tostring(state) or "")..(health and " | HP "..math.ceil(health.Health) or "")
         if marker.highlight then
-            marker.highlight.FillColor=Color3.new(1, 1, 1);marker.highlight.OutlineColor=Color3.new(1, 1, 1)
+            marker.highlight.FillColor=c.group[3];marker.highlight.OutlineColor=c.group[3]
         end
     end
     for object in pairs(worldMarkers) do if not keep[object] then removeWorld(object) end end
@@ -1283,16 +1287,18 @@ local guiOK, guiError = pcall(function()
 
     local world=window:CreateTab("HUSH World")
     world:CreateSection("Threats")
-    toggle(world,"Monster ESP + state","MonsterESP")
-    toggle(world,"Watcher ESP","WatcherESP")
-    toggle(world,"Sentry ESP","SentryESP")
+    -- Keep the original config key so existing Listener settings still load.
+    toggle(world,"Listener ESP + state (red)","MonsterESP")
+    toggle(world,"Mother ESP (purple)","MotherESP")
+    toggle(world,"Watcher ESP (yellow)","WatcherESP")
+    toggle(world,"Sentry ESP (orange)","SentryESP")
     toggle(world,"Mother hearing warning","ThreatWarning")
     worldStatus=world:CreateLabel("Waiting for world data")
     world:CreateSection("Loot and navigation")
-    toggle(world,"Loot, bags and lockboxes","LootESP")
-    toggle(world,"Supply drop ESP","SupplyESP")
-    toggle(world,"Extraction markers","ExitESP")
-    toggle(world,"Noise trap ESP","TrapESP")
+    toggle(world,"Loot, bags and lockboxes (grey)","LootESP")
+    toggle(world,"Supply drop ESP (brown)","SupplyESP")
+    toggle(world,"Extraction markers (green)","ExitESP")
+    toggle(world,"Noise trap ESP (pink)","TrapESP")
     slider(world,"World marker range","WorldESPRange",50,5000,50)
     slider(world,"Maximum world markers","WorldESPMax",20,300,10)
     world:CreateParagraph({Title="Loaded objects only",Content="Shows replicated objects currently loaded by the client. Extraction markers indicate locations; they do not confirm an exit is active. Aim, trigger and hitboxes retain the Home Defense player targeting."})
