@@ -1020,26 +1020,52 @@ local worldStatus
 local noiseGui=Instance.new("ScreenGui")
 noiseGui.Name="HushNoiseEstimate"
 noiseGui.ResetOnSpawn=false
+noiseGui.IgnoreGuiInset=true
 noiseGui.DisplayOrder=100001
 noiseGui.Enabled=false
 noiseGui.Parent=playerGui
 local noiseText=Instance.new("TextLabel")
-noiseText.AnchorPoint=Vector2.new(0.5,0)
-noiseText.Position=UDim2.new(0.5,0,0,85)
-noiseText.Size=UDim2.new(0.9,0,0,66)
-noiseText.BackgroundColor3=Color3.fromRGB(25,25,30)
-noiseText.BackgroundTransparency=0.15
+noiseText.AnchorPoint=Vector2.new(0,1)
+noiseText.Position=UDim2.new(0.012,0,0.86,-8)
+noiseText.Size=UDim2.fromOffset(300,48)
+noiseText.BackgroundTransparency=1
 noiseText.TextColor3=Color3.new(1,1,1)
 noiseText.Font=Enum.Font.GothamMedium
-noiseText.TextSize=15
-noiseText.TextWrapped=true
+noiseText.TextSize=18
+noiseText.TextWrapped=false
+noiseText.TextXAlignment=Enum.TextXAlignment.Left
+noiseText.TextYAlignment=Enum.TextYAlignment.Bottom
+noiseText.TextStrokeTransparency=0.3
 noiseText.Parent=noiseGui
+local handsUpLabel
+local nextHandsUpSearch=0
+local function positionNoiseHUD()
+    if (not handsUpLabel or not handsUpLabel.Parent) and os.clock()>=nextHandsUpSearch then
+        nextHandsUpSearch=os.clock()+2
+        for _,item in ipairs(playerGui:GetDescendants()) do
+            if (item:IsA("TextLabel") or item:IsA("TextButton")) and item.Visible
+                and string.upper(item.Text):match("^%s*HANDS UP%s*$") then
+                handsUpLabel=item
+                break
+            end
+        end
+    end
+    if handsUpLabel and handsUpLabel.Parent and handsUpLabel.AbsoluteSize.Y>0 then
+        local row=handsUpLabel.Parent
+        local left=math.max(12,handsUpLabel.AbsolutePosition.X-36)
+        if row:IsA("GuiObject") and row.AbsoluteSize.X<400 then left=row.AbsolutePosition.X end
+        noiseText.Position=UDim2.fromOffset(left,handsUpLabel.AbsolutePosition.Y-10)
+    else
+        noiseText.Position=UDim2.new(0.012,0,0.86,-8)
+    end
+end
 local function updateNoiseEstimate()
     noiseGui.Enabled=Config.NoiseCeiling
     if not Config.NoiseCeiling then return end
+    positionNoiseHUD()
     local character=LocalPlayer.Character
     local origin=character and character:FindFirstChild("HumanoidRootPart")
-    if not origin then noiseText.Text="Noise estimate: waiting for your character";return end
+    if not origin then noiseText.Text="Nearest Listener: --\n-- dB";return end
     -- Independent of ESP toggles, marker range and marker count.
     local monsters=workspace:FindFirstChild("Monsters")
     local nearest=math.huge
@@ -1056,19 +1082,17 @@ local function updateNoiseEstimate()
         end
     end
     if nearest==math.huge then
-        noiseText.Text="Noise ceiling unknown: no loaded Listeners\nOther threats and unloaded enemies are not covered."
+        noiseText.Text="Nearest Listener: --\n-- dB"
         return
     end
     -- Saved Acoustics: radius = min(1200, 14 * 10^((db-55)/20)).
     -- Add a 1.15 hearing-distance allowance and subtract a 6 dB buffer.
     if nearest>1200*1.15 then
-        noiseText.Text="Noise ceiling unknown: nearest loaded Listener outside modeled range"
+        noiseText.Text="Nearest Listener: "..math.floor(nearest).." studs\n-- dB"
         return
     end
     local ceiling=math.floor(55+20*math.log10(math.max(nearest,0.01)/(14*1.15))-6)
-    local limit=ceiling>0 and ("keep below ~"..ceiling.." dB") or "stay silent"
-    noiseText.Text="Estimated noise ceiling: "..limit.." | Listener "..math.floor(nearest).." studs"
-        .."\n6 dB buffer. Loaded Listeners only; walls and special hearing are not modeled."
+    noiseText.Text="Nearest Listener: "..math.floor(nearest).." studs\n"..math.max(0,ceiling).." dB"
 end
 local worldGroups={
     {"Monsters","MonsterESP",Color3.fromRGB(255,0,0),"Listeners"},
