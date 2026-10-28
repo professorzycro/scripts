@@ -24,7 +24,7 @@ local Config = {
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
     MotherESP=false, MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
-    WorldESPRange=1200, WorldESPMax=150, ThreatWarning=true,
+    MonsterESPRange=1200, ItemESPRange=1200, WorldESPMax=150, ThreatWarning=true,
     AutoSave = true,
 }
 local configDefaults = {}
@@ -68,7 +68,7 @@ local lastConfigMessage = "No saved workspace config loaded"
 local configRanges = {Radius={20,600},Smoothing={0,0.5},PredictionTime={0,0.25},TriggerDelay={0,1},
     FireInterval={0.03,1},TriggerPressTime={0.02,0.2},HitboxSize={2,20},HitboxTransparency={0,0.95},
     MaxDistance={50,5000},HitboxDistance={50,5000},ESPDistanceLimit={50,5000},ESPTextSize={10,24},CameraFOV={40,120},
-    RecoilStrength={0,100},WorldESPRange={50,5000},WorldESPMax={20,300}}
+    RecoilStrength={0,100},MonsterESPRange={50,5000},ItemESPRange={50,5000},WorldESPMax={20,300}}
 local configOptions = {AimOrigin={Auto=true,Center=true,Cursor=true},AimPart={Auto=true,Head=true,UpperTorso=true,HumanoidRootPart=true},
     TriggerMode={Auto=true,Mouse=true,Tool=true},TriggerPoint={Auto=true,Center=true,Cursor=true},
     TriggerPattern={Pulse=true,Hold=true},HitboxPart={Head=true,Torso=true,Both=true}}
@@ -94,6 +94,10 @@ local function applyConfig(snapshot)
     for name,default in pairs(configDefaults) do
         local value=snapshot.Settings[name]
         if name=="HitboxDistance" and value==nil then value=snapshot.Settings.MaxDistance end
+        -- Migrate the old shared world range when separate ranges are not saved yet.
+        if (name=="MonsterESPRange" or name=="ItemESPRange") and value==nil then
+            value=snapshot.Settings.WorldESPRange
+        end
         if type(value)==type(default) then
             if type(value)=="number" then
                 if value==value and math.abs(value)<1e8 then
@@ -1043,6 +1047,9 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
     local candidates={}
     for _,group in ipairs(worldGroups) do
         local folder=Config[group[2]] and workspace:FindFirstChild(group[1])
+        local creature=group[2]=="MonsterESP" or group[2]=="WatcherESP"
+            or group[2]=="SentryESP" or group[2]=="MotherESP"
+        local range=creature and Config.MonsterESPRange or Config.ItemESPRange
         if folder then
             -- Mother is one workspace model; the other groups are containers.
             local objects=group[5] and {folder} or folder:GetChildren()
@@ -1053,7 +1060,7 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
                 local dead=hum and hum.Health<=0
                 if anchor and anchor:IsA("BasePart") and not dead then
                     local distance=(camera.CFrame.Position-anchor.Position).Magnitude
-                    if distance<=Config.WorldESPRange then
+                    if distance<=range then
                         candidates[#candidates+1]={object=object,anchor=anchor,distance=distance,group=group}
                     end
                 end
@@ -1268,7 +1275,7 @@ local guiOK, guiError = pcall(function()
     esp:CreateSection("Visibility")
     toggle(esp,"Enemy only","ESPTeamCheck")
     toggle(esp,"Show through walls","ESPThroughWalls")
-    slider(esp,"Maximum range (studs)","ESPDistanceLimit",50,5000,50)
+    slider(esp,"Player ESP distance (studs)","ESPDistanceLimit",50,5000,50)
     esp:CreateSection("Labels")
     toggle(esp,"Names","ESPNames")
     toggle(esp,"Health","ESPHealth")
@@ -1306,7 +1313,9 @@ local guiOK, guiError = pcall(function()
     toggle(world,"Supply drop ESP (brown)","SupplyESP")
     toggle(world,"Extraction markers (green)","ExitESP")
     toggle(world,"Noise trap ESP (pink)","TrapESP")
-    slider(world,"World marker range","WorldESPRange",50,5000,50)
+    slider(world,"Monster ESP distance (studs)","MonsterESPRange",50,5000,50)
+    slider(world,"Item ESP distance (studs)","ItemESPRange",50,5000,50)
+    world:CreateParagraph({Title="Distance groups",Content="Monster distance covers Listeners, Watchers, Sentries and Mother. Item distance covers loot, supply drops, extraction and noise traps. Player distance is in the ESP tab."})
     slider(world,"Maximum world markers","WorldESPMax",20,300,10)
     world:CreateParagraph({Title="Loaded objects only",Content="Shows replicated objects currently loaded by the client. Extraction markers indicate locations; they do not confirm an exit is active. Aim, trigger and hitboxes retain the Home Defense player targeting."})
 
