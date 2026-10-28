@@ -24,6 +24,7 @@ local Config = {
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
     MotherESP=false, MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
+    NoiseCeiling=false,
     MonsterESPRange=1200, ItemESPRange=1200, WorldESPMax=150, ThreatWarning=true,
     AutoSave = true,
 }
@@ -1016,6 +1017,59 @@ local worldFolder=Instance.new("Folder")
 worldFolder.Name="HushWorldMarkers"
 worldFolder.Parent=workspace
 local worldStatus
+local noiseGui=Instance.new("ScreenGui")
+noiseGui.Name="HushNoiseEstimate"
+noiseGui.ResetOnSpawn=false
+noiseGui.DisplayOrder=100001
+noiseGui.Enabled=false
+noiseGui.Parent=playerGui
+local noiseText=Instance.new("TextLabel")
+noiseText.AnchorPoint=Vector2.new(0.5,0)
+noiseText.Position=UDim2.new(0.5,0,0,85)
+noiseText.Size=UDim2.new(0.9,0,0,66)
+noiseText.BackgroundColor3=Color3.fromRGB(25,25,30)
+noiseText.BackgroundTransparency=0.15
+noiseText.TextColor3=Color3.new(1,1,1)
+noiseText.Font=Enum.Font.GothamMedium
+noiseText.TextSize=15
+noiseText.TextWrapped=true
+noiseText.Parent=noiseGui
+local function updateNoiseEstimate()
+    noiseGui.Enabled=Config.NoiseCeiling
+    if not Config.NoiseCeiling then return end
+    local character=LocalPlayer.Character
+    local origin=character and character:FindFirstChild("HumanoidRootPart")
+    if not origin then noiseText.Text="Noise estimate: waiting for your character";return end
+    -- Independent of ESP toggles, marker range and marker count.
+    local monsters=workspace:FindFirstChild("Monsters")
+    local nearest=math.huge
+    if monsters then
+        for _,model in ipairs(monsters:GetChildren()) do
+            local kind=model:GetAttribute("Kind")
+            local hum=model:FindFirstChildOfClass("Humanoid")
+            local root=model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+                or (model:IsA("Model") and model.PrimaryPart)
+            if (kind==nil or kind=="Listener") and root and root:IsA("BasePart")
+                and (not hum or hum.Health>0) and model:GetAttribute("State")~="Dead" then
+                nearest=math.min(nearest,(origin.Position-root.Position).Magnitude)
+            end
+        end
+    end
+    if nearest==math.huge then
+        noiseText.Text="Noise ceiling unknown: no loaded Listeners\nOther threats and unloaded enemies are not covered."
+        return
+    end
+    -- Saved Acoustics: radius = min(1200, 14 * 10^((db-55)/20)).
+    -- Add a 1.15 hearing-distance allowance and subtract a 6 dB buffer.
+    if nearest>1200*1.15 then
+        noiseText.Text="Noise ceiling unknown: nearest loaded Listener outside modeled range"
+        return
+    end
+    local ceiling=math.floor(55+20*math.log10(math.max(nearest,0.01)/(14*1.15))-6)
+    local limit=ceiling>0 and ("keep below ~"..ceiling.." dB") or "stay silent"
+    noiseText.Text="Estimated noise ceiling: "..limit.." | Listener "..math.floor(nearest).." studs"
+        .."\n6 dB buffer. Loaded Listeners only; walls and special hearing are not modeled."
+end
 local worldGroups={
     {"Monsters","MonsterESP",Color3.fromRGB(255,0,0),"Listeners"},
     {"Watchers","WatcherESP",Color3.fromRGB(255,255,0),"Watchers"},
@@ -1036,12 +1090,14 @@ end
 clearHush=function()
     for object in pairs(worldMarkers) do removeWorld(object) end
     worldFolder:Destroy()
+    noiseGui:Destroy()
 end
 local elapsed=0
 connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
     elapsed=elapsed+dt
     if elapsed<0.25 or not active then return end
     elapsed=0
+    updateNoiseEstimate()
     local camera=workspace.CurrentCamera
     if not camera then return end
     local candidates={}
@@ -1307,6 +1363,7 @@ local guiOK, guiError = pcall(function()
     toggle(world,"Watcher ESP (yellow)","WatcherESP")
     toggle(world,"Sentry ESP (orange)","SentryESP")
     toggle(world,"Mother hearing warning","ThreatWarning")
+    toggle(world,"Estimated noise ceiling HUD","NoiseCeiling")
     worldStatus=world:CreateLabel("Waiting for world data")
     world:CreateSection("Loot and navigation")
     toggle(world,"Loot, bags and lockboxes (grey)","LootESP")
