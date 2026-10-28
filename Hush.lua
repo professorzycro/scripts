@@ -647,7 +647,8 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
                 local tag = Instance.new("BillboardGui")
                 tag.Name = "HushESP"
                 tag.Size = UDim2.fromOffset(230, 70)
-                tag.StudsOffsetWorldSpace = Vector3.new(0, 3.5, 0)
+                -- Anchor the bottom of the entire text panel above the head.
+                tag.SizeOffset = Vector2.new(0, 0.5)
                 tag.ResetOnSpawn = false
                 tag.LightInfluence = 0
                 tag.Parent = currentPlayerGui
@@ -671,7 +672,13 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
             visual.Highlight.FillColor = color
             visual.Highlight.OutlineColor = color
             visual.Highlight.DepthMode = Config.ESPThroughWalls and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
-            visual.Tag.Adornee = character:FindFirstChild("Head") or root
+            local espHead = character:FindFirstChild("Head")
+            local textAnchor = espHead and espHead:IsA("BasePart") and espHead or root
+            visual.Tag.Adornee = textAnchor
+            local aboveHead = espHead == textAnchor and (textAnchor.Size.Y * 0.5 + 0.6) or 3.5
+            visual.Tag.StudsOffsetWorldSpace = Vector3.new(0, aboveHead, 0)
+            visual.Tag.Size = UDim2.fromOffset(230, Config.ESPTextSize * 3 + 20)
+            visual.Label.TextYAlignment = Enum.TextYAlignment.Bottom
             visual.Tag.AlwaysOnTop = Config.ESPThroughWalls
             visual.Tag.MaxDistance = Config.ESPDistanceLimit
             visual.Label.TextColor3 = color
