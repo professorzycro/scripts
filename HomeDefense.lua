@@ -1,3 +1,195 @@
+-- Work.ink authorization. Keys are verified online on every launch.
+do
+    local KEY_LINK = "https://work.ink/740632/house-defense-script"
+    local LINK_ID = 5062009
+    local KEY_FILE = "ProfessorZycro/HomeDefense-workink-key.json"
+    local function checkWorkinkResponse(data, token, expectedId, now)
+        if type(data)~="table" or data.valid~=true then return false,"Invalid or expired key." end
+        local info=data.info
+        if type(info)~="table" or tonumber(info.linkId)~=expectedId then
+            return false,"This key belongs to a different Work.ink link. Use Get Key."
+        end
+        if info.token~=nil and info.token~=token then return false,"Unexpected verification response." end
+        if type(info.expiresAfter)~="number" or info.expiresAfter<=now then
+            return false,"Key expired. Use Get Key for a new one."
+        end
+        return true,"Key verified."
+    end
+    local function authorizeHomeDefense()
+        local environment=getgenv()
+        if environment.HomeDefenseKeyGate then pcall(environment.HomeDefenseKeyGate.Cancel) end
+        local players=game:GetService("Players")
+        local input=game:GetService("UserInputService")
+        local httpService=game:GetService("HttpService")
+        local parent=players.LocalPlayer:WaitForChild("PlayerGui")
+        pcall(function() if gethui then parent=gethui() end end)
+        local gui=Instance.new("ScreenGui")
+        gui.Name="HomeDefenseWorkinkKeyGate"
+        gui.ResetOnSpawn=false
+        gui.DisplayOrder=100010
+        gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+        gui.Parent=parent
+        local panel=Instance.new("Frame")
+        panel.AnchorPoint=Vector2.new(0.5,0.5)
+        panel.Position=UDim2.fromScale(0.5,0.5)
+        panel.Size=UDim2.new(0.9,0,0,320)
+        panel.BackgroundColor3=Color3.fromRGB(28,28,33)
+        panel.BorderSizePixel=0
+        panel.Parent=gui
+        local sizeLimit=Instance.new("UISizeConstraint")
+        sizeLimit.MaxSize=Vector2.new(410,320)
+        sizeLimit.Parent=panel
+        local corner=Instance.new("UICorner")
+        corner.CornerRadius=UDim.new(0,10)
+        corner.Parent=panel
+        local function label(text,y,height,size)
+            local item=Instance.new("TextLabel")
+            item.Position=UDim2.fromOffset(20,y)
+            item.Size=UDim2.new(1,-40,0,height)
+            item.BackgroundTransparency=1
+            item.TextColor3=Color3.fromRGB(235,235,240)
+            item.Font=Enum.Font.Gotham
+            item.TextSize=size or 14
+            item.TextWrapped=true
+            item.Text=text
+            item.Parent=panel
+            return item
+        end
+        label("HOME DEFENSE | Access key",16,30,20)
+        label("Get a key from Work.ink, then paste it below.",52,36)
+        local box=Instance.new("TextBox")
+        box.Position=UDim2.fromOffset(20,100)
+        box.Size=UDim2.new(1,-40,0,42)
+        box.BackgroundColor3=Color3.fromRGB(42,42,49)
+        box.TextColor3=Color3.new(1,1,1)
+        box.PlaceholderText="Enter your Work.ink key"
+        box.PlaceholderColor3=Color3.fromRGB(160,160,170)
+        box.Font=Enum.Font.Gotham
+        box.TextSize=14
+        box.Text=""
+        box.ClearTextOnFocus=false
+        box.Parent=panel
+        local status=label("A saved key is checked online before use.",220,44,13)
+        label("Close or press End to cancel.",278,24,12)
+        local connections={}
+        local finished,accepted,busy=false,false,false
+        local gate
+        local function finish(success)
+            if finished then return end
+            finished,accepted=true,success
+            for _,connection in ipairs(connections) do connection:Disconnect() end
+            gui:Destroy()
+            if environment.HomeDefenseKeyGate==gate then environment.HomeDefenseKeyGate=nil end
+        end
+        gate={Cancel=function() finish(false) end}
+        environment.HomeDefenseKeyGate=gate
+        local function note(text)
+            if not finished then status.Text=text end
+        end
+        local function button(text,x,width,callback)
+            local item=Instance.new("TextButton")
+            item.Position=UDim2.new(x,20,0,156)
+            item.Size=UDim2.new(width,-14,0,40)
+            item.BackgroundColor3=Color3.fromRGB(56,56,66)
+            item.TextColor3=Color3.new(1,1,1)
+            item.Font=Enum.Font.GothamMedium
+            item.TextSize=13
+            item.Text=text
+            item.Parent=panel
+            connections[#connections+1]=item.MouseButton1Click:Connect(callback)
+            return item
+        end
+        local function verify(value)
+            if busy or finished then return end
+            local token=tostring(value or ""):match("^%s*(.-)%s*$")
+            if #token==0 or #token>512 or token:find("%s") then
+                note("Paste the key itself, not the Work.ink link.");return
+            end
+            if LINK_ID<=0 then note("Publisher setup incomplete: missing numeric Work.ink Link ID.");return end
+            busy=true
+            note("Checking key with Work.ink...")
+            local done,ok,result=false,false,nil
+            local thread=task.spawn(function()
+                ok,result=pcall(function()
+                    local url="https://work.ink/_api/v2/token/isValid/"..httpService:UrlEncode(token)
+                    local send=request or http_request or (syn and syn.request) or (http and http.request)
+                    local body
+                    if type(send)=="function" then
+                        local response=send({Url=url,Method="GET",Headers={Accept="application/json"}})
+                        assert(type(response)=="table" and tonumber(response.StatusCode)==200,"Verification unavailable")
+                        body=response.Body
+                    else
+                        body=game:HttpGet(url,true)
+                    end
+                    return httpService:JSONDecode(body)
+                end)
+                done=true
+            end)
+            local deadline=os.clock()+12
+            while not done and not finished and os.clock()<deadline do task.wait(0.05) end
+            if not done then
+                if task.cancel then pcall(task.cancel,thread) end
+                busy=false
+                note("Verification timed out. Try again.")
+                return
+            end
+            busy=false
+            if finished then return end
+            if not ok then note("Could not reach Work.ink. Try again; access stays locked.");return end
+            local valid,message=checkWorkinkResponse(result,token,LINK_ID,DateTime.now().UnixTimestampMillis)
+            note(message)
+            if not valid then return end
+            pcall(function()
+                if type(writefile)~="function" then return end
+                if makefolder and (not isfolder or not isfolder("ProfessorZycro")) then makefolder("ProfessorZycro") end
+                writefile(KEY_FILE,httpService:JSONEncode({Version=1,LinkId=LINK_ID,Key=token}))
+            end)
+            finish(true)
+        end
+        button("Get Key",0,0.32,function()
+            if type(setclipboard)=="function" then
+                local copied=pcall(setclipboard,KEY_LINK)
+                note(copied and "Key link copied. Open it in your browser." or KEY_LINK)
+            else
+                box.Text=KEY_LINK
+                note("Copy the link from the box and open it in your browser.")
+            end
+        end)
+        button("Paste",0.32,0.27,function()
+            if type(getclipboard)=="function" then
+                local ok,value=pcall(getclipboard)
+                if ok and type(value)=="string" then box.Text=value;note("Key pasted. Press Verify.") end
+            else box:CaptureFocus();note("Paste with Ctrl+V, then press Verify.") end
+        end)
+        button("Verify",0.59,0.32,function() verify(box.Text) end)
+        local close=Instance.new("TextButton")
+        close.Size=UDim2.fromOffset(30,30)
+        close.Position=UDim2.new(1,-36,0,6)
+        close.BackgroundTransparency=1
+        close.TextColor3=Color3.new(1,1,1)
+        close.Text="X"
+        close.TextSize=16
+        close.Parent=panel
+        connections[#connections+1]=close.MouseButton1Click:Connect(function() finish(false) end)
+        connections[#connections+1]=box.FocusLost:Connect(function(enter) if enter then verify(box.Text) end end)
+        connections[#connections+1]=input.InputBegan:Connect(function(key)
+            if key.KeyCode==Enum.KeyCode.End then finish(false) end
+        end)
+        task.spawn(function()
+            if type(readfile)~="function" then return end
+            local ok,saved=pcall(function()
+                if isfile and not isfile(KEY_FILE) then return nil end
+                return httpService:JSONDecode(readfile(KEY_FILE))
+            end)
+            if ok and type(saved)=="table" and saved.Version==1 and saved.LinkId==LINK_ID
+                and type(saved.Key)=="string" then verify(saved.Key) end
+        end)
+        while not finished do task.wait(0.05) end
+        return accepted
+    end
+    if not authorizeHomeDefense() then return end
+end
+
 -- Home Defense helper. Uses compatible aim when Exunys/Drawing is unavailable.
 -- Aimbot credit: Exunys https://github.com/Exunys/Aimbot-V3 (CC0-1.0).
 -- Generic player-character support; not tested against this game's weapons.
@@ -1221,4 +1413,3 @@ if not guiOK then
     bootMessage("Home Defense menu failed: " .. tostring(guiError) .. " — send this message to debug.")
     warn("HomeDefense menu failed: " .. tostring(guiError))
 end
-
