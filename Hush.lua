@@ -25,6 +25,10 @@ local Config = {
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
     MotherESP=false, MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
+    LockboxESP=true, LootBagESP=true,
+    LootWeapons=true, LootAttachments=true, LootMedical=true, LootMaterials=true,
+    LootAmmo=true, LootFood=true, LootGear=true, LootCodes=true, LootOther=true,
+    DeepwellESP=false, CraftingESP=false, BountyESP=false,
     CodeESP=false,
     NoiseCeiling=false,
     MonsterESPRange=1200, ItemESPRange=1200, WorldESPMax=150, ThreatWarning=true,
@@ -200,7 +204,7 @@ bootText.TextColor3 = Color3.new(1, 1, 1)
 bootText.Font = Enum.Font.Gotham
 bootText.TextSize = 16
 bootText.TextWrapped = true
-bootText.Text = "HUSH build 17: starting..."
+bootText.Text = "HUSH build 18: starting..."
 bootText.Parent = bootGui
 local function bootMessage(message)
     if bootText.Parent then bootText.Text = message end
@@ -1221,6 +1225,147 @@ local function updateNoiseEstimate()
     local ceiling=math.floor(55+20*math.log10(math.max(nearest,0.01)/(14*1.15))-6)
     noiseText.Text="Nearest Listener: "..math.floor(nearest).." studs\n"..math.max(0,ceiling).." dB"
 end
+-- Item names/categories from the supplied game's Items.Defs.
+local itemCatalog={
+    pistol={name="9mm Pistol",category="Weapons"},
+    revolver={name=".357 Revolver",category="Weapons"},
+    hand_cannon={name=".50 Hand Cannon",category="Weapons"},
+    machine_pistol={name="Machine Pistol",category="Weapons"},
+    shotgun={name="Pump Shotgun",category="Weapons"},
+    double_barrel={name="Double Barrel",category="Weapons"},
+    rifle={name="5.56 Carbine",category="Weapons"},
+    ak47={name="AK-47",category="Weapons"},
+    mp5={name="MP5",category="Weapons"},
+    minigun={name="Minigun",category="Weapons"},
+    rpk={name="RPK",category="Weapons"},
+    sniper={name="Bolt-Action Sniper",category="Weapons"},
+    honey_badger={name="Honey Badger",category="Weapons"},
+    listener_tooth={name="Listener Tooth",category="Weapons"},
+    sledgehammer={name="Sledgehammer",category="Weapons"},
+    pistol_gold={name="Golden 9mm Pistol",category="Weapons"},
+    double_barrel_gold={name="Golden Double Barrel",category="Weapons"},
+    revolver_gold={name="Golden .357 Revolver",category="Weapons"},
+    sniper_gold={name="Golden Bolt-Action Sniper",category="Weapons"},
+    block_switch={name="Block with a Switch",category="Weapons"},
+    canned_beans={name="Canned Beans",category="Food"},
+    crackers={name="Crackers",category="Food"},
+    energy_bar={name="Energy Bar",category="Food"},
+    water_bottle={name="Water Bottle",category="Water"},
+    soda_can={name="Soda Can",category="Water"},
+    bandage={name="Bandage",category="Medical"},
+    medkit={name="Medkit",category="Medical"},
+    defib={name="Defibrillator",category="Medical"},
+    light_ammo={name="Light Ammo",category="Ammo"},
+    medium_ammo={name="Medium Ammo",category="Ammo"},
+    heavy_ammo={name="Heavy Ammo",category="Ammo"},
+    shotgun_ammo={name="Shotgun Ammo",category="Ammo"},
+    pistol_mag_ext={name="Extended Light Mag",category="Attachments"},
+    rifle_mag_ext={name="Extended Medium Mag",category="Attachments"},
+    mag_drum={name="Medium Drum Mag",category="Attachments"},
+    wooden_board={name="Wooden Board",category="Materials"},
+    sheet_metal={name="Sheet Metal",category="Materials"},
+    nails={name="Nails",category="Materials"},
+    duct_tape={name="Duct Tape",category="Materials"},
+    rags={name="Cloth Rags",category="Materials"},
+    scrap_metal={name="Scrap Metal",category="Materials"},
+    gunpowder={name="Gunpowder",category="Materials"},
+    electronics={name="Electronics",category="Materials"},
+    chemicals={name="Chemicals",category="Materials"},
+    gun_parts_light={name="Light Gun Parts",category="Materials"},
+    gun_parts_medium={name="Medium Gun Parts",category="Materials"},
+    wood_wall={name="Wood Wall",category="Building"},
+    wood_door={name="Wood Door",category="Building"},
+    metal_wall={name="Metal Wall",category="Building"},
+    wood_floor={name="Wood Floor",category="Building"},
+    wood_barricade={name="Barricade",category="Building"},
+    wood_ladder={name="Ladder",category="Building"},
+    car_armor={name="Car Armor",category="Building"},
+    flood_light={name="Flood Light",category="Building"},
+    crowbar={name="Crowbar",category="Tools"},
+    hammer={name="Hammer",category="Tools"},
+    toolkit={name="Tool Kit",category="Tools"},
+    flashlight={name="Flashlight",category="Tools"},
+    nv_goggles={name="Night Vision Goggles",category="Tools"},
+    handcuffs={name="Handcuffs",category="Tools"},
+    supply_flare={name="Supply Flare",category="Tools"},
+    deepwell_code={name="Deepwell Access Card",category="Tools"},
+    armory_key={name="Armory Key",category="Tools"},
+    bunker_code={name="Bunker Code",category="Tools"},
+    owner_note={name="Note from Instiagtor",category="Tools"},
+    frag_grenade={name="Frag Grenade",category="Tools"},
+    remote_charge={name="Remote Charge",category="Tools"},
+    noise_lure={name="Noise Lure",category="Tools"},
+    grappling_hook={name="Grappling Hook",category="Tools"},
+    banjo={name="Banjo",category="Tools"},
+    detonator={name="Detonator",category="Tools"},
+    silencer_1={name="Silencer I",category="Attachments"},
+    silencer_2={name="Silencer II",category="Attachments"},
+    silencer_3={name="Silencer III",category="Attachments"},
+    grip_vertical={name="Vertical Grip",category="Attachments"},
+    grip_angled={name="Angled Grip",category="Attachments"},
+    mag_extended={name="Shotgun Tube Extension",category="Attachments"},
+    junk={name="Junk",category="Junk"},
+}
+local lootCategories={
+    Weapons="LootWeapons",Attachments="LootAttachments",Medical="LootMedical",
+    Materials="LootMaterials",Building="LootMaterials",Junk="LootMaterials",
+    Ammo="LootAmmo",Food="LootFood",Water="LootFood",
+    Armor="LootGear",Tools="LootGear",Accessories="LootGear",
+}
+local function lootInfo(object)
+    local id=object.Name:match("^Dropped_(.+)$") or object.Name:match("^Find_(.+)$")
+    if id=="bunker_code" then return "Bunker code note","LootCodes" end
+    local item=id and itemCatalog[id]
+    if item then return item.name,lootCategories[item.category] or "LootOther" end
+    return (id or object.Name):gsub("_"," "),"LootOther"
+end
+local function resolveWorldPath(path)
+    local object=workspace
+    for name in path:gmatch("[^.]+") do
+        object=object:FindFirstChild(name)
+        if not object then return nil end
+    end
+    return object
+end
+-- Index nested lockbox models once, then follow streamed additions/removals.
+local nestedLockboxes={}
+local function indexLockbox(object)
+    if object:IsA("Model") and object.Name=="Lockbox" then
+        local parent=object.Parent
+        while parent and parent~=workspace do
+            if parent.Name=="Lockboxes" then nestedLockboxes[object]=true;return end
+            parent=parent.Parent
+        end
+    end
+end
+connections[#connections+1]=workspace.DescendantAdded:Connect(indexLockbox)
+connections[#connections+1]=workspace.DescendantRemoving:Connect(function(object)
+    nestedLockboxes[object]=nil
+end)
+task.spawn(function()
+    local objects=workspace:GetDescendants()
+    for i,object in ipairs(objects) do
+        if not active then return end
+        if object:IsDescendantOf(workspace) then indexLockbox(object) end
+        if i%2000==0 then task.wait() end
+    end
+end)
+local function groupObjects(group)
+    if not Config[group[2]] then return {} end
+    if group[1]=="NestedLockboxes" then
+        if not Config.LockboxESP then return {} end
+        local objects={}
+        for object in pairs(nestedLockboxes) do
+            if object:IsDescendantOf(workspace) then objects[#objects+1]=object
+            else nestedLockboxes[object]=nil end
+        end
+        return objects
+    end
+    if group[1]=="LootBags" and not Config.LootBagESP then return {} end
+    local container=resolveWorldPath(group[1])
+    if not container then return {} end
+    return group[5] and {container} or container:GetChildren()
+end
 local worldGroups={
     {"DeepwellTrail","CodeESP",Color3.fromRGB(0,235,255),"Code paper"},
     {"Monsters","MonsterESP",Color3.fromRGB(255,0,0),"Listeners"},
@@ -1228,11 +1373,17 @@ local worldGroups={
     {"Sentries","SentryESP",Color3.fromRGB(255,140,0),"Sentries"},
     {"Mother","MotherESP",Color3.fromRGB(160,70,255),"Mother",true},
     {"WorldFinds","LootESP",Color3.fromRGB(150,150,150),"Loot"},
-    {"LootBags","LootESP",Color3.fromRGB(150,150,150),"Loot bags"},
-    {"Lockboxes","LootESP",Color3.fromRGB(150,150,150),"Lockboxes"},
-    {"SupplyDrops","SupplyESP",Color3.fromRGB(139,90,43),"Supply drops"},
-    {"Exits","ExitESP",Color3.fromRGB(0,255,0),"Extraction"},
-    {"NoiseTraps","TrapESP",Color3.fromRGB(255,105,180),"Noise traps"},
+    {"LootBags","LootESP",Color3.fromRGB(150,150,150),"Loot bag"},
+    {"NestedLockboxes","LootESP",Color3.fromRGB(150,150,150),"Lockbox"},
+    {"SupplyDrops","SupplyESP",Color3.fromRGB(139,90,43),"Supply drop"},
+    {"Town.Exits","ExitESP",Color3.fromRGB(0,255,0),"Extraction"},
+    {"NoiseTraps","TrapESP",Color3.fromRGB(255,105,180),"Noise trap"},
+    {"Deepwell.Rooms.PowerHall.BreakerLever","DeepwellESP",Color3.fromRGB(0,235,255),"DEEPWELL",true,"Power breaker"},
+    {"Deepwell.Rooms.Stores.VaultDoor","DeepwellESP",Color3.fromRGB(0,235,255),"DEEPWELL",true,"Vault door"},
+    {"Deepwell.Rooms.Armory.ArmoryDoor","DeepwellESP",Color3.fromRGB(0,235,255),"DEEPWELL",true,"Armory door"},
+    {"Deepwell.Portal.BlastDoor","DeepwellESP",Color3.fromRGB(0,235,255),"DEEPWELL",true,"Blast door"},
+    {"CraftingBenches","CraftingESP",Color3.fromRGB(230,230,230),"Crafting bench"},
+    {"Town.Zones.HavenOutpost.BountyOffice.BountyWindow","BountyESP",Color3.fromRGB(230,230,230),"Bounty office",true,"Bounty office"},
 }
 local function removeWorld(object)
     local marker=worldMarkers[object]
@@ -1241,6 +1392,7 @@ local function removeWorld(object)
 end
 clearHush=function()
     for object in pairs(worldMarkers) do removeWorld(object) end
+    table.clear(nestedLockboxes)
     worldFolder:Destroy()
     noiseGui:Destroy()
 end
@@ -1255,24 +1407,34 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
     if not camera then return end
     local candidates={}
     for _,group in ipairs(worldGroups) do
-        local folder=Config[group[2]] and workspace:FindFirstChild(group[1])
         local creature=group[2]=="MonsterESP" or group[2]=="WatcherESP"
             or group[2]=="SentryESP" or group[2]=="MotherESP"
         local range=creature and Config.MonsterESPRange or Config.ItemESPRange
-        if folder then
-            -- Mother is one workspace model; the other groups are containers.
-            local objects=group[5] and {folder} or folder:GetChildren()
-            for _,object in ipairs(objects) do
-                local anchor=object:IsA("BasePart") and object or object:FindFirstChild("Head",true)
-                    or object:FindFirstChild("HumanoidRootPart",true) or object:FindFirstChildWhichIsA("BasePart",true)
+        for _,object in ipairs(groupObjects(group)) do
+            local codePaper=group[2]=="CodeESP"
+            local matches=not codePaper or object.Name=="CodeFragment"
+            local displayName=group[6] or object.Name
+            if group[1]=="WorldFinds" then
+                local filter
+                displayName,filter=lootInfo(object)
+                matches=matches and Config[filter]
+            elseif group[1]=="Sentries" then
+                displayName=object.Name=="Sentry_PATROL" and "Patrol sentry"
+                    or (object.Name=="Sentry_POWER" and "Power sentry" or object.Name)
+            elseif codePaper then displayName="Code paper"
+            elseif group[1]=="CraftingBenches" then displayName="Crafting bench" end
+            if matches then
+                local anchor=object:IsA("BasePart") and object
+                    or object:FindFirstChild("Head",true)
+                    or object:FindFirstChild("HumanoidRootPart",true)
+                    or (object:IsA("Model") and object.PrimaryPart)
+                    or object:FindFirstChildWhichIsA("BasePart",true)
                 local hum=object:FindFirstChildOfClass("Humanoid")
-                local dead=hum and hum.Health<=0
-                local codePaper=group[2]=="CodeESP"
-                local matches=not codePaper or object.Name=="CodeFragment"
-                if matches and anchor and anchor:IsA("BasePart") and not dead then
+                if anchor and anchor:IsA("BasePart") and (not hum or hum.Health>0) then
                     local distance=(camera.CFrame.Position-anchor.Position).Magnitude
                     if distance<=range then
-                        candidates[#candidates+1]={object=object,anchor=anchor,distance=distance,group=group}
+                        candidates[#candidates+1]={object=object,anchor=anchor,distance=distance,
+                            group=group,displayName=displayName}
                     end
                 end
             end
@@ -1305,8 +1467,7 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
         marker.text.TextColor3=c.group[3]
         local state=object:GetAttribute("State")
         local health=object:FindFirstChildOfClass("Humanoid")
-        local displayName=c.group[2]=="CodeESP" and "Code paper"
-            or (c.group[1]=="Monsters" and "Listener" or object.Name)
+        local displayName=c.displayName
         marker.text.Text=displayName.." ["..c.group[4].."] "..math.floor(c.distance).." studs"
             ..(state and "\n"..tostring(state) or "")..(health and " | HP "..math.ceil(health.Health) or "")
         if marker.highlight then
@@ -1425,8 +1586,8 @@ local guiOK, guiError = pcall(function()
         local control=configControls[property]
         if control then control:Set(type(value)=="string" and {value} or value) end
     end
-    local aim=window:CreateTab("Aim")
-    aim:CreateSection("Activation")
+    local aim=window:CreateTab("Combat")
+    aim:CreateSection("Aim assist")
     toggle(aim,"Aimbot","Aim","Aim")
     toggle(aim,"Always on","AimAlways")
     toggle(aim,"Pause while menu is open","PauseAimWithMenu")
@@ -1452,8 +1613,8 @@ local guiOK, guiError = pcall(function()
     end})
     aim:CreateParagraph({Title="Quick guide",Content="Always on stays centered. Auto selects a visible head or torso. Lower smoothing is faster; zero snaps. Prediction adds fixed-time movement lead."})
 
-    local trigger=window:CreateTab("Triggerbot")
-    trigger:CreateSection("Activation")
+    local trigger=aim
+    trigger:CreateSection("Triggerbot")
     toggle(trigger,"Triggerbot","Trigger","Trigger")
     triggerStatus=trigger:CreateLabel("Trigger: off")
     trigger:CreateSection("Firing")
@@ -1473,8 +1634,8 @@ local guiOK, guiError = pcall(function()
     toggle(trigger,"Ignore non-collidable effects","TriggerIgnoreEffects")
     trigger:CreateParagraph({Title="Quick guide",Content="Equip a weapon and hide the menu. Hold suits automatic weapons; Pulse suits semi-auto. Auto crosshair uses screen center."})
 
-    local hitboxes=window:CreateTab("Hitboxes")
-    hitboxes:CreateSection("Activation")
+    local hitboxes=aim
+    hitboxes:CreateSection("Hitboxes")
     toggle(hitboxes,"Hitbox expander","Hitboxes","Hitboxes")
     hitboxes:CreateSection("Shape")
     dropdown(hitboxes,"Body parts","HitboxPart",{"Head","Torso","Both"})
@@ -1486,7 +1647,7 @@ local guiOK, guiError = pcall(function()
     hitboxes:CreateParagraph({Title="Compatibility",Content="Expands recognized body parts locally and restores them when disabled or dead. Server validation may still reject expanded hits."})
 
     local esp=window:CreateTab("ESP")
-    esp:CreateSection("Activation")
+    esp:CreateSection("Players — white")
     toggle(esp,"Player ESP","Highlights","ESP")
     esp:CreateSection("Visibility")
     toggle(esp,"Enemy only","ESPTeamCheck")
@@ -1502,7 +1663,55 @@ local guiOK, guiError = pcall(function()
     toggle(esp,"Character boxes","ESPBoxes")
     esp:CreateButton({Name="Refresh ESP",Callback=clearESP})
 
-    local visuals=window:CreateTab("Visuals")
+    esp:CreateSection("Creatures")
+    toggle(esp,"Listeners — red","MonsterESP")
+    toggle(esp,"Watchers — yellow","WatcherESP")
+    toggle(esp,"Sentries — orange","SentryESP")
+    toggle(esp,"Mother — purple","MotherESP")
+    slider(esp,"Creature distance (studs)","MonsterESPRange",50,5000,50)
+    esp:CreateParagraph({Title="Sentries",Content="Patrol and power sentries have separate names on their markers."})
+    esp:CreateSection("Noise awareness")
+    toggle(esp,"Mother hearing warning","ThreatWarning")
+    toggle(esp,"Noise ceiling HUD","NoiseCeiling")
+    worldStatus=esp:CreateLabel("Waiting for world data")
+    esp:CreateParagraph({Title="Noise estimate",Content="The HUD shows the nearest loaded Listener and an estimated dB ceiling with a 6 dB buffer. Walls, unloaded enemies and special hearing are not modeled."})
+
+    local loot=window:CreateTab("Loot")
+    loot:CreateSection("Loot markers — grey")
+    toggle(loot,"Enable loot ESP","LootESP")
+    toggle(loot,"Nested lockboxes","LockboxESP")
+    toggle(loot,"Loot bags","LootBagESP")
+    loot:CreateSection("Loose-item filters")
+    toggle(loot,"Weapons","LootWeapons")
+    toggle(loot,"Attachments","LootAttachments")
+    toggle(loot,"Medical supplies","LootMedical")
+    toggle(loot,"Materials and junk","LootMaterials")
+    toggle(loot,"Ammunition","LootAmmo")
+    toggle(loot,"Food and drinks","LootFood")
+    toggle(loot,"Gear and tools","LootGear")
+    toggle(loot,"Bunker code notes","LootCodes")
+    toggle(loot,"Other items","LootOther")
+    loot:CreateSection("Supplies and distance")
+    toggle(loot,"Supply drops — brown","SupplyESP")
+    slider(loot,"Item and map distance (studs)","ItemESPRange",50,5000,50)
+    slider(loot,"Maximum world markers","WorldESPMax",20,300,10)
+    loot:CreateParagraph({Title="Filters",Content="Filters apply to loose items. Bags and lockboxes show locations; their contents may not be revealed until opened. Bunker code notes are separate from DEEPWELL fragments."})
+
+    local world=window:CreateTab("Map")
+    world:CreateSection("DEEPWELL")
+    toggle(world,"Code papers — cyan","CodeESP")
+    toggle(world,"Breaker and doors — cyan","DeepwellESP")
+    codeStatus=world:CreateLabel("Read code: ? ? ? ? | Loaded papers: 0")
+    world:CreateParagraph({Title="Code tracker",Content="Read papers normally to fill the four code positions. Unknown letters stay ?. The tracker clears when the town resets."})
+    world:CreateSection("Navigation")
+    toggle(world,"Extraction — green","ExitESP")
+    toggle(world,"Noise traps — pink","TrapESP")
+    world:CreateSection("Services")
+    toggle(world,"Crafting benches","CraftingESP")
+    toggle(world,"Bounty office","BountyESP")
+    world:CreateParagraph({Title="Map markers",Content="Uses the Item and map distance in Loot. Markers show loaded locations; extraction and door markers do not confirm availability or unlock them."})
+
+    local visuals=window:CreateTab("Camera")
     visuals:CreateSection("Freecam")
     toggle(visuals,"Freecam","Freecam","Freecam")
     slider(visuals,"Freecam speed (studs/sec)","FreecamSpeed",5,200,5)
@@ -1514,39 +1723,13 @@ local guiOK, guiError = pcall(function()
     toggle(visuals,"Fullbright","Fullbright")
     toggle(visuals,"Override camera FOV","CameraOverride")
     slider(visuals,"Camera FOV","CameraFOV",40,120)
-    visuals:CreateSection("Recoil")
-    toggle(visuals,"Camera recoil dampener","RecoilEnabled","Recoil")
-    slider(visuals,"Camera smoothing (%)","RecoilStrength",0,100,5)
-    recoilStatus=visuals:CreateLabel("Recoil: Off")
-    visuals:CreateParagraph({Title="Camera only",Content="Smooths stationary-mouse firing. Pauses during mouse movement and leaves weapon settings unchanged."})
-
-    local world=window:CreateTab("HUSH World")
-    world:CreateSection("Threats")
-    -- Keep the original config key so existing Listener settings still load.
-    toggle(world,"Listener ESP + state (red)","MonsterESP")
-    toggle(world,"Mother ESP (purple)","MotherESP")
-    toggle(world,"Watcher ESP (yellow)","WatcherESP")
-    toggle(world,"Sentry ESP (orange)","SentryESP")
-    toggle(world,"Mother hearing warning","ThreatWarning")
-    toggle(world,"Estimated noise ceiling HUD","NoiseCeiling")
-    worldStatus=world:CreateLabel("Waiting for world data")
-    world:CreateSection("Code papers")
-    toggle(world,"Code paper ESP (cyan)","CodeESP")
-    codeStatus=world:CreateLabel("Read code: ? ? ? ? | Loaded papers: 0")
-    world:CreateParagraph({Title="DEEPWELL code",Content="Marks loaded CodeFragment papers through walls using Item ESP distance. Read each paper normally to fill its position in the four-letter tracker. Unknown letters stay ?. Tracker clears when the town resets; settings save, letters do not."})
-    world:CreateSection("Loot and navigation")
-    toggle(world,"Loot, bags and lockboxes (grey)","LootESP")
-    toggle(world,"Supply drop ESP (brown)","SupplyESP")
-    toggle(world,"Extraction markers (green)","ExitESP")
-    toggle(world,"Noise trap ESP (pink)","TrapESP")
-    slider(world,"Monster ESP distance (studs)","MonsterESPRange",50,5000,50)
-    slider(world,"Item ESP distance (studs)","ItemESPRange",50,5000,50)
-    world:CreateParagraph({Title="Distance groups",Content="Monster distance covers Listeners, Watchers, Sentries and Mother. Item distance covers loot, supply drops, extraction and noise traps. Player distance is in the ESP tab."})
-    slider(world,"Maximum world markers","WorldESPMax",20,300,10)
-    world:CreateParagraph({Title="Loaded objects only",Content="Shows replicated objects currently loaded by the client. Extraction markers indicate locations; they do not confirm an exit is active. Aim, trigger and hitboxes retain the Home Defense player targeting."})
+    aim:CreateSection("Recoil")
+    toggle(aim,"Camera recoil dampener","RecoilEnabled","Recoil")
+    slider(aim,"Camera smoothing (%)","RecoilStrength",0,100,5)
+    recoilStatus=aim:CreateLabel("Recoil: Off")
 
     local settings=window:CreateTab("Settings")
-    settings:CreateSection("Workspace config")
+    settings:CreateSection("Saved settings")
     toggle(settings,"Auto-save","AutoSave")
     configStatus=settings:CreateLabel(lastConfigMessage)
     settings:CreateButton({Name="Save config",Callback=function() saveSettings(true) end})
