@@ -25,6 +25,7 @@ local Config = {
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
     MotherESP=false, MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
+    CodeESP=false,
     NoiseCeiling=false,
     MonsterESPRange=1200, ItemESPRange=1200, WorldESPMax=150, ThreatWarning=true,
     AutoSave = true,
@@ -1100,6 +1101,49 @@ local worldFolder=Instance.new("Folder")
 worldFolder.Name="HushWorldMarkers"
 worldFolder.Parent=workspace
 local worldStatus
+local codeStatus
+local codeLetters={}
+local codeRemote
+local codeConnection
+local codeRound=game:GetService("ReplicatedStorage"):GetAttribute("RoundEndsAt")
+local codeTrail
+local function updateCodePapers()
+    local storage=game:GetService("ReplicatedStorage")
+    local round=storage:GetAttribute("RoundEndsAt")
+    local trail=workspace:FindFirstChild("DeepwellTrail")
+    if round~=codeRound or (codeTrail and trail~=codeTrail) then codeLetters={} end
+    codeRound=round
+    codeTrail=trail
+    local remotes=storage:FindFirstChild("Remotes")
+    local remote=remotes and remotes:FindFirstChild("Bunker")
+    if remote~=codeRemote then
+        if codeConnection then codeConnection:Disconnect();codeConnection=nil end
+        codeRemote=remote
+        if remote and remote:IsA("RemoteEvent") then
+            codeConnection=remote.OnClientEvent:Connect(function(action,paper)
+                -- Record only the ordered fragment the game actually reveals.
+                if action=="paper" and type(paper)=="table" and paper.kind=="fragment"
+                    and type(paper.index)=="number" and paper.index%1==0
+                    and paper.index>=1 and paper.index<=4
+                    and type(paper.letter)=="string" and #paper.letter==1 then
+                    codeLetters[paper.index]=paper.letter
+                end
+            end)
+            connections[#connections+1]=codeConnection
+        end
+    end
+    if codeStatus then
+        local slots={}
+        for i=1,4 do slots[i]=codeLetters[i] or "?" end
+        local loaded=0
+        if trail then
+            for _,object in ipairs(trail:GetChildren()) do
+                if object.Name=="CodeFragment" then loaded=loaded+1 end
+            end
+        end
+        codeStatus:Set("Read code: "..table.concat(slots," ").." | Loaded papers: "..loaded)
+    end
+end
 local noiseGui=Instance.new("ScreenGui")
 noiseGui.Name="HushNoiseEstimate"
 noiseGui.ResetOnSpawn=false
@@ -1178,6 +1222,7 @@ local function updateNoiseEstimate()
     noiseText.Text="Nearest Listener: "..math.floor(nearest).." studs\n"..math.max(0,ceiling).." dB"
 end
 local worldGroups={
+    {"DeepwellTrail","CodeESP",Color3.fromRGB(0,235,255),"Code paper"},
     {"Monsters","MonsterESP",Color3.fromRGB(255,0,0),"Listeners"},
     {"Watchers","WatcherESP",Color3.fromRGB(255,255,0),"Watchers"},
     {"Sentries","SentryESP",Color3.fromRGB(255,140,0),"Sentries"},
@@ -1205,6 +1250,7 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
     if elapsed<0.25 or not active then return end
     elapsed=0
     updateNoiseEstimate()
+    updateCodePapers()
     local camera=workspace.CurrentCamera
     if not camera then return end
     local candidates={}
@@ -1221,7 +1267,9 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
                     or object:FindFirstChild("HumanoidRootPart",true) or object:FindFirstChildWhichIsA("BasePart",true)
                 local hum=object:FindFirstChildOfClass("Humanoid")
                 local dead=hum and hum.Health<=0
-                if anchor and anchor:IsA("BasePart") and not dead then
+                local codePaper=group[2]=="CodeESP"
+                local matches=not codePaper or object.Name=="CodeFragment"
+                if matches and anchor and anchor:IsA("BasePart") and not dead then
                     local distance=(camera.CFrame.Position-anchor.Position).Magnitude
                     if distance<=range then
                         candidates[#candidates+1]={object=object,anchor=anchor,distance=distance,group=group}
@@ -1230,7 +1278,11 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
             end
         end
     end
-    table.sort(candidates,function(a,b) return a.distance<b.distance end)
+    table.sort(candidates,function(a,b)
+        local ac,bc=a.group[2]=="CodeESP",b.group[2]=="CodeESP"
+        if ac~=bc then return ac end -- Keep code papers visible under the marker cap.
+        return a.distance<b.distance
+    end)
     local keep={}
     for i=1,math.min(#candidates,Config.WorldESPMax) do
         local c=candidates[i];local object=c.object
@@ -1253,7 +1305,8 @@ connections[#connections+1]=RunService.Heartbeat:Connect(function(dt)
         marker.text.TextColor3=c.group[3]
         local state=object:GetAttribute("State")
         local health=object:FindFirstChildOfClass("Humanoid")
-        local displayName=c.group[1]=="Monsters" and "Listener" or object.Name
+        local displayName=c.group[2]=="CodeESP" and "Code paper"
+            or (c.group[1]=="Monsters" and "Listener" or object.Name)
         marker.text.Text=displayName.." ["..c.group[4].."] "..math.floor(c.distance).." studs"
             ..(state and "\n"..tostring(state) or "")..(health and " | HP "..math.ceil(health.Health) or "")
         if marker.highlight then
@@ -1477,6 +1530,10 @@ local guiOK, guiError = pcall(function()
     toggle(world,"Mother hearing warning","ThreatWarning")
     toggle(world,"Estimated noise ceiling HUD","NoiseCeiling")
     worldStatus=world:CreateLabel("Waiting for world data")
+    world:CreateSection("Code papers")
+    toggle(world,"Code paper ESP (cyan)","CodeESP")
+    codeStatus=world:CreateLabel("Read code: ? ? ? ? | Loaded papers: 0")
+    world:CreateParagraph({Title="DEEPWELL code",Content="Marks loaded CodeFragment papers through walls using Item ESP distance. Read each paper normally to fill its position in the four-letter tracker. Unknown letters stay ?. Tracker clears when the town resets; settings save, letters do not."})
     world:CreateSection("Loot and navigation")
     toggle(world,"Loot, bags and lockboxes (grey)","LootESP")
     toggle(world,"Supply drop ESP (brown)","SupplyESP")
