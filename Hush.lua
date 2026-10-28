@@ -21,6 +21,7 @@ local Config = {
     ESPNames = true, ESPHealth = true, ESPDistance = true, ESPTeamColors = false,
     ESPTeamCheck = true, ESPThroughWalls = true, ESPBoxes = false,
     ESPDistanceLimit = 1500, ESPTextSize = 14, Fullbright = false,
+    Freecam = false, FreecamSpeed = 40, FreecamSensitivity = 0.15,
     CameraOverride = false, CameraFOV = 80,
     RecoilEnabled = false, RecoilStrength = 60,
     MotherESP=false, MonsterESP=false, WatcherESP=false, SentryESP=false, LootESP=false, SupplyESP=false, ExitESP=false, TrapESP=false,
@@ -59,7 +60,7 @@ local capturingKey, triggerStatus, fireHeld, heldTool, releaseAt
 local keyButtons = {}
 local keys = {Aim = Enum.UserInputType.MouseButton2, Trigger = Enum.KeyCode.F6,
     Hitboxes = Enum.KeyCode.F7, ESP = Enum.KeyCode.F8, Unload = Enum.KeyCode.End,
-    Menu = Enum.KeyCode.F1, Recoil = Enum.KeyCode.F4}
+    Menu = Enum.KeyCode.F1, Recoil = Enum.KeyCode.F4, Freecam = Enum.KeyCode.F5}
 local HttpService = game:GetService("HttpService")
 local keyDefaults = {}
 for action, key in pairs(keys) do keyDefaults[action] = key.Name end
@@ -69,6 +70,7 @@ local lastConfigMessage = "No saved workspace config loaded"
 local configRanges = {Radius={20,600},Smoothing={0,0.5},PredictionTime={0,0.25},TriggerDelay={0,1},
     FireInterval={0.03,1},TriggerPressTime={0.02,0.2},HitboxSize={2,20},HitboxTransparency={0,0.95},
     MaxDistance={50,5000},HitboxDistance={50,5000},ESPDistanceLimit={50,5000},ESPTextSize={10,24},CameraFOV={40,120},
+    FreecamSpeed={5,200},FreecamSensitivity={0.05,0.5},
     RecoilStrength={0,100},MonsterESPRange={50,5000},ItemESPRange={50,5000},WorldESPMax={20,300}}
 local configOptions = {AimOrigin={Auto=true,Center=true,Cursor=true},AimPart={Auto=true,Head=true,UpperTorso=true,HumanoidRootPart=true},
     TriggerMode={Auto=true,Mouse=true,Tool=true},TriggerPoint={Auto=true,Center=true,Cursor=true},
@@ -80,6 +82,7 @@ end
 local function configSnapshot()
     local snapshot = {Version=1,Settings={},Keys={}}
     for name,value in pairs(Config) do snapshot.Settings[name]=value end
+    snapshot.Settings.Freecam=false -- Camera mode starts off each session; speed and sensitivity persist.
     for action,key in pairs(keys) do snapshot.Keys[action]=key.Name end
     return snapshot
 end
@@ -301,10 +304,88 @@ restore = function(part)
         originals[part] = nil
     end
 end
+local freecamState
+local freecamAction="HushFreecamInput"
+local freecamRender="HushFreecamRender"
+local ContextActions=game:GetService("ContextActionService")
+local function stopFreecam()
+    ContextActions:UnbindAction(freecamAction)
+    local state=freecamState
+    if not state then return end
+    freecamState=nil
+    pcall(function()
+        state.camera.CameraType=state.cameraType
+        state.camera.CameraSubject=state.subject
+        state.camera.CFrame=state.cframe
+        state.camera.Focus=state.focus
+    end)
+    Input.MouseBehavior=state.mouseBehavior
+    Input.MouseIconEnabled=state.mouseIcon
+end
+local function startFreecam(camera)
+    releaseFire()
+    aimLock=nil
+    local pitch,yaw=camera.CFrame:ToOrientation()
+    freecamState={camera=camera,cameraType=camera.CameraType,subject=camera.CameraSubject,
+        cframe=camera.CFrame,focus=camera.Focus,mouseBehavior=Input.MouseBehavior,
+        mouseIcon=Input.MouseIconEnabled,position=camera.CFrame.Position,pitch=pitch,yaw=yaw}
+    camera.CameraType=Enum.CameraType.Scriptable
+    ContextActions:BindActionAtPriority(freecamAction,function()
+        return Enum.ContextActionResult.Sink
+    end,false,10000,Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,
+        Enum.KeyCode.Q,Enum.KeyCode.E,Enum.KeyCode.Space,Enum.KeyCode.LeftControl,
+        Enum.KeyCode.LeftShift,Enum.UserInputType.MouseButton1,Enum.UserInputType.MouseButton2)
+    local humanoid=LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then humanoid:Move(Vector3.zero,false) end
+end
+local function renderFreecam(dt)
+    if not active then return end
+    local camera=workspace.CurrentCamera
+    if not Config.Freecam or not camera then stopFreecam();return end
+    if freecamState and freecamState.camera~=camera then
+        Config.Freecam=false
+        stopFreecam()
+        if uiToggles and uiToggles.Freecam then uiToggles.Freecam:Set(false) end
+        return
+    end
+    if not freecamState then startFreecam(camera) end
+    local state=freecamState
+    camera.CameraType=Enum.CameraType.Scriptable
+    local typing=Input:GetFocusedTextBox()~=nil or capturingKey~=nil
+    local looking=not typing and Input:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    Input.MouseBehavior=looking and Enum.MouseBehavior.LockCurrentPosition or Enum.MouseBehavior.Default
+    Input.MouseIconEnabled=not looking
+    if looking then
+        local delta=Input:GetMouseDelta()*math.rad(Config.FreecamSensitivity)
+        state.pitch=math.clamp(state.pitch-delta.Y,math.rad(-89),math.rad(89))
+        state.yaw=state.yaw-delta.X
+    end
+    local rotation=CFrame.fromOrientation(state.pitch,state.yaw,0)
+    local function down(key) return not typing and Input:IsKeyDown(key) and 1 or 0 end
+    local x=down(Enum.KeyCode.D)-down(Enum.KeyCode.A)
+    local z=down(Enum.KeyCode.S)-down(Enum.KeyCode.W)
+    local y=math.max(down(Enum.KeyCode.E),down(Enum.KeyCode.Space))
+        -math.max(down(Enum.KeyCode.Q),down(Enum.KeyCode.LeftControl))
+    local move=rotation.RightVector*x+rotation.LookVector*(-z)+Vector3.yAxis*y
+    if move.Magnitude>0 then
+        local boost=down(Enum.KeyCode.LeftShift)>0 and 3 or 1
+        state.position=state.position+move.Unit*Config.FreecamSpeed*boost*math.min(dt,0.1)
+    end
+    camera.CFrame=CFrame.new(state.position)*rotation
+    camera.Focus=camera.CFrame*CFrame.new(0,0,-20)
+end
+connections[#connections+1]=LocalPlayer.CharacterRemoving:Connect(function()
+    Config.Freecam=false
+    stopFreecam()
+    if uiToggles and uiToggles.Freecam then uiToggles.Freecam:Set(false) end
+end)
+RunService:BindToRenderStep(freecamRender,Enum.RenderPriority.Last.Value+2,renderFreecam)
 local function unload()
     if not active then return end
     if configReady and Config.AutoSave then saveSettings(false) end
     active = false
+    stopFreecam()
+    RunService:UnbindFromRenderStep(freecamRender)
     releaseFire()
     for _, connection in ipairs(connections) do connection:Disconnect() end
     pcall(function() RunService:UnbindFromRenderStep(aimRenderName) end)
@@ -498,6 +579,7 @@ connections[#connections + 1] = Input.InputBegan:Connect(function(input, process
     if input.KeyCode == keys.Hitboxes then flip("Hitboxes") end
     if input.KeyCode == keys.ESP then flip("Highlights") end
     if input.KeyCode == keys.Recoil then flip("RecoilEnabled") end
+    if input.KeyCode == keys.Freecam then flip("Freecam") end
 end)
 
 local elapsed = 0
@@ -506,7 +588,7 @@ connections[#connections + 1] = RunService.Heartbeat:Connect(function(dt)
     local now = os.clock()
     local fireRequested = Config.Trigger
     if releaseAt and now >= releaseAt then releaseFire(); releaseAt = nil end
-    local blocked = capturingKey or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
+    local blocked = Config.Freecam or capturingKey or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
     local equippedTool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
     local target, targetCharacter
     if fireRequested and equippedTool and not blocked then target, targetCharacter = triggerTarget() end
@@ -724,6 +806,7 @@ tracer.AnchorPoint, tracer.BorderSizePixel, tracer.Visible = Vector2.new(0, 0.5)
 tracer.BackgroundColor3, tracer.Parent = Color3.fromRGB(255, 100, 100), aimGui
 local function renderAim(dt)
     if not active then return end
+    if Config.Freecam then aimLock=nil;aimCircle.Visible=false;tracer.Visible=false;return end
     local camera = workspace.CurrentCamera
     if not camera then return end
     local cursor = Input:GetMouseLocation()
@@ -832,7 +915,7 @@ local function renderRecoil()
     local tool = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
     local firing = Input:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
         or fireHeld or heldTool ~= nil or (lastShot > 0 and os.clock() - lastShot < 0.12)
-    local blocked = not Config.RecoilEnabled or not tool or not firing or capturingKey
+    local blocked = Config.Freecam or not Config.RecoilEnabled or not tool or not firing or capturingKey
         or Input:GetFocusedTextBox() or (Rayfield and Rayfield:IsVisible())
     if blocked then
         recoilPrevious = current
@@ -1367,6 +1450,11 @@ local guiOK, guiError = pcall(function()
     esp:CreateButton({Name="Refresh ESP",Callback=clearESP})
 
     local visuals=window:CreateTab("Visuals")
+    visuals:CreateSection("Freecam")
+    toggle(visuals,"Freecam","Freecam","Freecam")
+    slider(visuals,"Freecam speed (studs/sec)","FreecamSpeed",5,200,5)
+    slider(visuals,"Freecam mouse sensitivity","FreecamSensitivity",0.05,0.5,0.01)
+    visuals:CreateParagraph({Title="Freecam controls",Content="F5 toggles. WASD moves, E/Space rises, Q/Left Ctrl lowers. Hold RMB to look and Left Shift for 3x speed. Your character stays in the game and can still be harmed. Camera mode starts off each session."})
     visuals:CreateSection("Shared visibility")
     toggle(visuals,"Ignore breakable glass","IgnoreBreakableGlass")
     visuals:CreateSection("Lighting & camera")
