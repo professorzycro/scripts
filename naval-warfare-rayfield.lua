@@ -17,13 +17,54 @@ local window = Rayfield:CreateWindow({Name="Naval Warfare", LoadingTitle="Naval 
     LoadingSubtitle="ESP / Teleports / Weapons", ToggleUIKeybind=Enum.KeyCode.RightShift,
     ConfigurationSaving={Enabled=false}, Discord={Enabled=false}, KeySystem=false})
 local settings = {esp=false, teamCheck=true, names=true, distance=15000,
-    infinite=false, noCooldown=false, silent=false, fullAuto=false, fov=180, wallCheck=true}
+    infinite=false, noCooldown=false, silent=false, fullAuto=false, fov=180, wallCheck=true,
+    hitbox=false, hitboxSize=10, hitboxTransparency=0.7}
 local alive, links, records, visuals = true, {}, {}, {}
 local folder = Instance.new("Folder")
 folder.Name = "NavalLocalVisuals"
 folder.Parent = workspace
 local function notify(message)
     Rayfield:Notify({Title="Naval Warfare", Content=message, Duration=5})
+end
+local configPath="NavalWarfare/settings.json"
+local configAvailable=type(readfile)=="function" and type(writefile)=="function" and type(makefolder)=="function"
+local HttpService=game:GetService("HttpService")
+local configError
+if configAvailable then
+    pcall(function() makefolder("NavalWarfare") end)
+    local exists=type(isfile)=="function" and isfile(configPath)
+    if exists then
+        local loaded,data=pcall(function() return HttpService:JSONDecode(readfile(configPath)) end)
+        if loaded and type(data)=="table" and data.Version==1 and type(data.Settings)=="table" then
+            for key,default in pairs(settings) do
+                local value=data.Settings[key]
+                if type(value)==type(default) then
+                    if type(value)~="number" or (value==value and math.abs(value)<math.huge) then settings[key]=value end
+                end
+            end
+            settings.distance=math.clamp(settings.distance,500,30000)
+            settings.fov=math.clamp(settings.fov,25,600)
+            settings.hitboxSize=math.clamp(settings.hitboxSize,2,30)
+            settings.hitboxTransparency=math.clamp(settings.hitboxTransparency,0,1)
+        else configError="Saved settings could not be read; defaults were loaded." end
+    end
+end
+local function saveConfig(quiet)
+    if not configAvailable then
+        if not quiet then notify("This executor does not provide config file support.") end
+        return false
+    end
+    local saved,err=pcall(function()
+        writefile(configPath,HttpService:JSONEncode({Version=1,Settings=settings}))
+    end)
+    if not quiet then notify(saved and "Settings saved to NavalWarfare/settings.json" or "Config save failed: "..tostring(err)) end
+    return saved
+end
+local savePending=false
+local function queueSave()
+    if savePending then return end
+    savePending=true
+    task.delay(0.3,function() savePending=false;if alive then saveConfig(true) end end)
 end
 local function connect(signal, fn)
     local c=signal:Connect(fn); table.insert(links,c); return c
@@ -101,6 +142,38 @@ local function updateESP()
     end
 end
 connect(Players.PlayerRemoving,removeVisual)
+local expanded={}
+local function restoreHitboxes()
+    for part,original in pairs(expanded) do
+        if part.Parent then
+            part.Size=original.size
+            part.Transparency=original.transparency
+        end
+        expanded[part]=nil
+    end
+end
+local function updateHitboxes()
+    local wanted={}
+    if settings.hitbox then
+        for _,p in ipairs(Players:GetPlayers()) do
+            if enemy(p) then
+                local _,_,root=validCharacter(p)
+                if root then
+                    wanted[root]=true
+                    if not expanded[root] then expanded[root]={size=root.Size,transparency=root.Transparency} end
+                    root.Size=Vector3.new(settings.hitboxSize,settings.hitboxSize,settings.hitboxSize)
+                    root.Transparency=settings.hitboxTransparency
+                end
+            end
+        end
+    end
+    for part,original in pairs(expanded) do
+        if not wanted[part] then
+            if part.Parent then part.Size=original.size;part.Transparency=original.transparency end
+            expanded[part]=nil
+        end
+    end
+end
 local function destination(code)
     if code=="USA" or code=="Japan" then
         local dock=workspace:FindFirstChild(code=="USA" and "USDock" or "JapanDock")
@@ -244,10 +317,20 @@ local function refreshTools()
     for _,entry in ipairs(stale) do restoreTool(entry[1],entry[2]) end
 end
 local visualsTab=window:CreateTab("ESP",0)
-visualsTab:CreateToggle({Name="Player ESP",CurrentValue=false,Callback=function(v) settings.esp=v;updateESP() end})
-visualsTab:CreateToggle({Name="Enemies only (also applies to silent aim)",CurrentValue=true,Callback=function(v) settings.teamCheck=v end})
-visualsTab:CreateToggle({Name="Names, health and distance",CurrentValue=true,Callback=function(v) settings.names=v end})
-visualsTab:CreateSlider({Name="ESP distance",Range={500,30000},Increment=500,Suffix="studs",CurrentValue=15000,Callback=function(v) settings.distance=v end})
+local function settingControl(tab,method,key,options)
+    local callback=options.Callback
+    options.CurrentValue=settings[key]
+    options.Callback=function(value)
+        settings[key]=value
+        if callback then callback(value) end
+        queueSave()
+    end
+    return tab[method](tab,options)
+end
+settingControl(visualsTab,"CreateToggle","esp",{Name="Player ESP",Callback=updateESP})
+settingControl(visualsTab,"CreateToggle","teamCheck",{Name="Enemies only (ESP, aim and hitboxes)",Callback=function() updateESP();updateHitboxes() end})
+settingControl(visualsTab,"CreateToggle","names",{Name="Names, health and distance"})
+settingControl(visualsTab,"CreateSlider","distance",{Name="ESP distance",Range={500,30000},Increment=500,Suffix="studs"})
 local tpTab=window:CreateTab("Teleports",0)
 for _,code in ipairs({"A","B","C","USA","Japan"}) do
     tpTab:CreateButton({Name=(#code==1 and "Island " or "Harbor ")..code,Callback=function() teleport(code) end})
@@ -259,27 +342,35 @@ local function setMod(key,value)
     for _,r in pairs(records) do r.ready=0;r.ammo=r.capacity end
     refreshTools()
 end
-gunsTab:CreateToggle({Name="Infinite ammo (rifle / RPG client)",CurrentValue=false,Callback=function(v) setMod("infinite",v) end})
-gunsTab:CreateToggle({Name="No reload cooldown (rifle / RPG client)",CurrentValue=false,Callback=function(v) setMod("noCooldown",v) end})
-gunsTab:CreateToggle({Name="Full auto (hold fire)",CurrentValue=false,Callback=function(v) setMod("fullAuto",v) end})
-gunsTab:CreateToggle({Name="Silent aim (rifle / RPG)",CurrentValue=false,Callback=function(v) setMod("silent",v) end})
-gunsTab:CreateToggle({Name="Silent aim visibility check",CurrentValue=true,Callback=function(v) settings.wallCheck=v end})
-gunsTab:CreateSlider({Name="Silent aim radius",Range={25,600},Increment=5,Suffix="pixels",CurrentValue=180,Callback=function(v) settings.fov=v end})
+settingControl(gunsTab,"CreateToggle","infinite",{Name="Infinite ammo (rifle / RPG client)",Callback=function(v) setMod("infinite",v) end})
+settingControl(gunsTab,"CreateToggle","noCooldown",{Name="No reload cooldown (rifle / RPG client)",Callback=function(v) setMod("noCooldown",v) end})
+settingControl(gunsTab,"CreateToggle","fullAuto",{Name="Full auto (hold fire)",Callback=function(v) setMod("fullAuto",v) end})
+settingControl(gunsTab,"CreateToggle","silent",{Name="Silent aim (rifle / RPG)",Callback=function(v) setMod("silent",v) end})
+settingControl(gunsTab,"CreateToggle","wallCheck",{Name="Silent aim visibility check"})
+settingControl(gunsTab,"CreateSlider","fov",{Name="Silent aim radius",Range={25,600},Increment=5,Suffix="pixels"})
+settingControl(gunsTab,"CreateToggle","hitbox",{Name="Hitbox expander",Callback=updateHitboxes})
+settingControl(gunsTab,"CreateSlider","hitboxSize",{Name="Hitbox size",Range={2,30},Increment=1,Suffix="studs",Callback=updateHitboxes})
+settingControl(gunsTab,"CreateSlider","hitboxTransparency",{Name="Hitbox transparency",Range={0,1},Increment=0.05,Callback=updateHitboxes})
+gunsTab:CreateParagraph({Title="Hitboxes",Content="Expands player root hitboxes locally. Uses the enemies-only setting. Turning it off or unloading restores original sizes and visibility. Server hit validation still applies."})
 gunsTab:CreateParagraph({Title="Weapon scope",Content="M1 Garand and RPG only. Full auto repeats while you hold fire and stops on release. Ammo and reload settings still apply. Silent aim selects a player near your cursor within 400 studs without moving your camera. Server checks still apply; vehicle ammo and cooldowns are not modified."})
 local systemTab=window:CreateTab("Settings",0)
 local cleanup
 cleanup=function()
     if not alive then return end
+    saveConfig(true)
     alive=false
     settings.esp=false;settings.infinite=false;settings.noCooldown=false;settings.silent=false;settings.fullAuto=false
     for _,c in ipairs(links) do c:Disconnect() end
     refreshTools()
+    restoreHitboxes()
     folder:Destroy()
     pcall(function() Rayfield:Destroy() end)
     if env.NavalWarfareCleanup==cleanup then env.NavalWarfareCleanup=nil end
 end
 env.NavalWarfareCleanup=cleanup
 systemTab:CreateButton({Name="Unload and restore weapon callbacks",Callback=cleanup})
+systemTab:CreateButton({Name="Save settings now",Callback=function() saveConfig(false) end})
+systemTab:CreateParagraph({Title="Config file",Content=configAvailable and "Settings save automatically to NavalWarfare/settings.json in your executor workspace and load next time you run this script." or "Config saving is unavailable: this executor needs readfile, writefile and makefolder support."})
 systemTab:CreateParagraph({Title="Controls",Content="Right Shift opens/closes the menu. Re-running unloads the previous copy. Turn all weapon toggles off to restore the original firing callbacks."})
 local elapsed=0
 connect(RunService.Heartbeat,function(dt)
@@ -291,6 +382,7 @@ connect(RunService.Heartbeat,function(dt)
     if elapsed<0.2 then return end
     elapsed=0
     updateESP()
+    updateHitboxes()
     refreshTools()
 end)
 connect(UIS.InputEnded,function(input)
@@ -301,4 +393,5 @@ end)
 connect(UIS.WindowFocusReleased,function()
     for _,r in pairs(records) do r.held=false end
 end)
-notify("Loaded. Enable features in the tabs; Right Shift toggles the menu.")
+if configError then notify(configError) end
+notify("Loaded. Right Shift toggles the menu. Settings restore automatically when file support is available.")
