@@ -14,7 +14,7 @@ local ok, Rayfield = pcall(function()
 end)
 assert(ok, "Rayfield failed to load: " .. tostring(Rayfield))
 local window = Rayfield:CreateWindow({Name="Naval Warfare", LoadingTitle="Naval Warfare",
-    LoadingSubtitle="ESP / Teleports / Weapons", ToggleUIKeybind="RightShift",
+    LoadingSubtitle="ESP / Teleports / Weapons", ToggleUIKeybind=Enum.KeyCode.RightShift,
     ConfigurationSaving={Enabled=false}, Discord={Enabled=false}, KeySystem=false})
 local settings = {esp=false, teamCheck=true, names=true, distance=15000,
     infinite=false, noCooldown=false, silent=false, fov=180, wallCheck=true}
