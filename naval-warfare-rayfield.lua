@@ -26,7 +26,32 @@ local window = Rayfield:CreateWindow({Name="Naval Warfare", LoadingTitle="Naval 
     ConfigurationSaving={Enabled=false}, Discord={Enabled=false}, KeySystem=false})
 local settings = {esp=false, teamCheck=true, names=true, distance=15000,
     infinite=false, noCooldown=false, silent=false, fullAuto=false, fov=180, wallCheck=true,
-    hitbox=false, hitboxSize=10, hitboxTransparency=0.7, menuKey="F1"}
+    hitbox=false, hitboxSize=10, hitboxTransparency=0.7, menuKey="F1",
+    vehicleESP=false, vehicleRange=15000, threats=false, threatRange=1800,
+    filterPlayers=true, filterShips=true, filterAircraft=true, filterSubmarines=true,
+    aimPlayerRange=400, aimVehicleRange=2000, teleportKeys=false,
+    keyA="F2",keyB="F3",keyC="F4",keyUSA="F5",keyJapan="F6"}
+local defaults=table.clone(settings)
+local limits={distance={500,30000},fov={25,600},hitboxSize={2,30},hitboxTransparency={0,1},
+    vehicleRange={500,30000},threatRange={250,5000},aimPlayerRange={25,400},aimVehicleRange={100,3000}}
+local function validKey(key)
+    return type(key)=="string" and key~="Unknown" and pcall(function() assert(Enum.KeyCode[key]) end)
+end
+local function applySettings(values)
+    for key,default in pairs(defaults) do
+        local value=values[key]
+        if type(value)==type(default) then
+            if type(value)=="number" then
+                if value==value and math.abs(value)<math.huge then
+                    local range=limits[key]
+                    settings[key]=range and math.clamp(value,range[1],range[2]) or value
+                end
+            elseif type(value)=="string" then
+                if validKey(value) then settings[key]=value end
+            else settings[key]=value end
+        end
+    end
+end
 local alive, links, records, visuals = true, {}, {}, {}
 local folder = Instance.new("Folder")
 folder.Name = "NavalLocalVisuals"
@@ -44,16 +69,7 @@ if configAvailable then
     if exists then
         local loaded,data=pcall(function() return HttpService:JSONDecode(readfile(configPath)) end)
         if loaded and type(data)=="table" and data.Version==1 and type(data.Settings)=="table" then
-            for key,default in pairs(settings) do
-                local value=data.Settings[key]
-                if type(value)==type(default) then
-                    if type(value)~="number" or (value==value and math.abs(value)<math.huge) then settings[key]=value end
-                end
-            end
-            settings.distance=math.clamp(settings.distance,500,30000)
-            settings.fov=math.clamp(settings.fov,25,600)
-            settings.hitboxSize=math.clamp(settings.hitboxSize,2,30)
-            settings.hitboxTransparency=math.clamp(settings.hitboxTransparency,0,1)
+            applySettings(data.Settings)
         else configError="Saved settings could not be read; defaults were loaded." end
     end
 end
@@ -92,16 +108,59 @@ local function validCharacter(p)
     if not h or h.Health<=0 or not root or c:FindFirstChildOfClass("ForceField") then return end
     return c,h,root
 end
-local function target(origin)
+local vehicleKinds={Bomber="Aircraft",["Large Bomber"]="Aircraft",["Torpedo Bomber"]="Aircraft",
+    Carrier="Ships",Battleship="Ships",Destroyer="Ships",Cruiser="Ships",["Heavy Cruiser"]="Ships",Submarine="Submarines"}
+local vehicles={}
+local vehicleVisuals={}
+local function allowedKind(kind) return settings["filter"..kind]==true end
+local function vehicleTeam(model)
+    local team=model:FindFirstChild("Team")
+    if team and team:IsA("ValueBase") then
+        local value=team.Value
+        if typeof(value)=="Instance" then return value.Name end
+        if type(value)=="string" and value~="" then return value end
+    end
+    local ancestor=model.Parent
+    while ancestor and ancestor~=workspace do
+        if ancestor.Name=="JapanVehicles" then return "Japan" end
+        if ancestor.Name=="USVehicles" then return "USA" end
+        ancestor=ancestor.Parent
+    end
+end
+local function vehicleHostile(v)
+    return player.Team and v.team and v.team~=player.Team.Name
+end
+local function vehicleAllowed(v)
+    return allowedKind(v.kind) and (not settings.teamCheck or vehicleHostile(v))
+end
+local function scanVehicles()
+    local found={}
+    local function visit(container)
+        for _,m in ipairs(container:GetChildren()) do
+            local kind=vehicleKinds[m.Name]
+            if m:IsA("Model") and kind then
+                local root=m:FindFirstChild("MainBody")
+                local hp=m:FindFirstChild("HP")
+                if root and root:IsA("BasePart") and (not hp or not hp:IsA("ValueBase") or tonumber(hp.Value)==nil or tonumber(hp.Value)>0) then
+                    found[m]={model=m,root=root,kind=kind,team=vehicleTeam(m),hp=hp}
+                end
+            end
+        end
+    end
+    visit(workspace)
+    for _,name in ipairs({"USVehicles","JapanVehicles"}) do
+        local container=workspace:FindFirstChild(name)
+        if container then visit(container) end
+    end
+    vehicles=found
+end
+local function target(origin,isRPG)
     local camera=workspace.CurrentCamera
     if not camera then return end
     local mouse=UIS:GetMouseLocation()
     local best, score=nil,settings.fov
-    for _,p in ipairs(Players:GetPlayers()) do
-        if enemy(p) then
-            local c,_,root=validCharacter(p)
-            local part=c and (c:FindFirstChild("Head") or root)
-            if part and (part.Position-origin).Magnitude<=400 then
+    local function consider(part,c,maxRange)
+            if part and part.Parent and (part.Position-origin).Magnitude<=maxRange then
                 local screen,onScreen=camera:WorldToScreenPoint(part.Position)
                 local delta=(Vector2.new(screen.X,screen.Y)-mouse).Magnitude
                 if onScreen and delta<score then
@@ -116,6 +175,18 @@ local function target(origin)
                     if clear then best=part; score=delta end
                 end
             end
+    end
+    if settings.filterPlayers then
+        for _,p in ipairs(Players:GetPlayers()) do
+            if enemy(p) then
+                local c,_,root=validCharacter(p)
+                if c then consider(c:FindFirstChild("Head") or root,c,settings.aimPlayerRange) end
+            end
+        end
+    end
+    if isRPG then
+        for _,v in pairs(vehicles) do
+            if vehicleAllowed(v) then consider(v.root,v.model,settings.aimVehicleRange) end
         end
     end
     return best
@@ -129,7 +200,7 @@ local function updateESP()
     if not camera then return end
     for _,p in ipairs(Players:GetPlayers()) do
         local c,h,root=validCharacter(p)
-        local visible=settings.esp and enemy(p) and root and (root.Position-camera.CFrame.Position).Magnitude<=settings.distance
+        local visible=settings.esp and settings.filterPlayers and enemy(p) and root and (root.Position-camera.CFrame.Position).Magnitude<=settings.distance
         if visible then
             local v=visuals[p]
             if v and v.character~=c then removeVisual(p);v=nil end
@@ -155,6 +226,57 @@ local function updateESP()
     end
 end
 connect(Players.PlayerRemoving,removeVisual)
+local threatTimes={}
+local lastThreat=-math.huge
+local function removeVehicleVisual(model)
+    local v=vehicleVisuals[model]
+    if v then v.highlight:Destroy();v.label:Destroy();vehicleVisuals[model]=nil end
+end
+local function updateVehicles()
+    local camera=workspace.CurrentCamera
+    if not camera then return end
+    local character=player.Character
+    local ownRoot=character and character:FindFirstChild("HumanoidRootPart")
+    local observer=ownRoot and ownRoot.Position or camera.CFrame.Position
+    local incoming,nearest=nil,math.huge
+    for model,v in pairs(vehicles) do
+        if not model.Parent or not v.root.Parent then removeVehicleVisual(model);continue end
+        v.team=vehicleTeam(model)
+        local distance=(v.root.Position-observer).Magnitude
+        if settings.vehicleESP and vehicleAllowed(v) and distance<=settings.vehicleRange then
+            local visual=vehicleVisuals[model]
+            if not visual then
+                local hl=Instance.new("Highlight")
+                hl.Adornee=model;hl.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
+                hl.FillTransparency=0.85;hl.Parent=folder
+                local bill=Instance.new("BillboardGui")
+                bill.Adornee=v.root;bill.AlwaysOnTop=true;bill.Size=UDim2.fromOffset(250,50)
+                bill.StudsOffset=Vector3.new(0,12,0);bill.Parent=folder
+                local text=Instance.new("TextLabel")
+                text.Size=UDim2.fromScale(1,1);text.BackgroundTransparency=1
+                text.Font=Enum.Font.GothamBold;text.TextSize=14;text.TextColor3=Color3.new(1,1,1)
+                text.TextStrokeTransparency=0.2;text.Parent=bill
+                visual={highlight=hl,label=bill,text=text};vehicleVisuals[model]=visual
+            end
+            local hostile=vehicleHostile(v)
+            local color=hostile and Color3.fromRGB(255,90,80) or Color3.fromRGB(90,190,255)
+            visual.highlight.FillColor=color;visual.highlight.OutlineColor=color
+            local hp=v.hp and v.hp.Parent and tostring(v.hp.Value).." HP" or "HP unavailable"
+            visual.text.Text=string.format("%s | %s\n%s | %d studs",model.Name,v.team or "Unknown team",hp,math.floor(distance))
+        else removeVehicleVisual(model) end
+        if settings.threats and ownRoot and vehicleHostile(v) and allowedKind(v.kind) and distance>1 and distance<=settings.threatRange then
+            local relative=v.root.AssemblyLinearVelocity-ownRoot.AssemblyLinearVelocity
+            local closing=-relative:Dot((v.root.Position-observer).Unit)
+            if closing>5 and distance<nearest and os.clock()-(threatTimes[model] or -math.huge)>=20 then incoming=v;nearest=distance end
+        end
+    end
+    for model in pairs(vehicleVisuals) do if not vehicles[model] then removeVehicleVisual(model) end end
+    for model in pairs(threatTimes) do if not vehicles[model] then threatTimes[model]=nil end end
+    if incoming and os.clock()-lastThreat>=6 then
+        lastThreat=os.clock();threatTimes[incoming.model]=lastThreat
+        notify(string.format("Incoming %s (%s): %d studs",incoming.model.Name,incoming.team,math.floor(nearest)))
+    end
+end
 local expanded={}
 local function restoreHitboxes()
     for part,original in pairs(expanded) do
@@ -167,7 +289,7 @@ local function restoreHitboxes()
 end
 local function updateHitboxes()
     local wanted={}
-    if settings.hitbox then
+    if settings.hitbox and settings.filterPlayers then
         for _,p in ipairs(Players:GetPlayers()) do
             if enemy(p) then
                 local _,_,root=validCharacter(p)
@@ -245,7 +367,7 @@ local function fire(tool,record)
     if not event or not event:IsA("RemoteEvent") or not handle then return end
     if record.ammo<=0 and not settings.infinite and not settings.noCooldown then return end
     local mouse=player:GetMouse()
-    local part=settings.silent and target(handle.Position)
+    local part=settings.silent and target(handle.Position,tool.Name=="RPG")
     local aim=part and part.Position or mouse.Hit.Position
     if (aim-handle.Position).Magnitude<0.01 then return end
     local sound=handle:FindFirstChild("FireSound")
@@ -330,25 +452,69 @@ local function refreshTools()
     for _,entry in ipairs(stale) do restoreTool(entry[1],entry[2]) end
 end
 local visualsTab=window:CreateTab("ESP",0)
+local controls={}
+local applyingPreset=false
+local lastKeyEdit=-math.huge
 local function settingControl(tab,method,key,options)
     local callback=options.Callback
     options.CurrentValue=settings[key]
     options.Callback=function(value)
         settings[key]=value
-        if callback then callback(value) end
-        queueSave()
+        if not applyingPreset then
+            if callback then callback(value) end
+            queueSave()
+        end
     end
-    return tab[method](tab,options)
+    local handle=tab[method](tab,options)
+    controls[key]=handle
+    return handle
 end
 settingControl(visualsTab,"CreateToggle","esp",{Name="Player ESP",Callback=updateESP})
 settingControl(visualsTab,"CreateToggle","teamCheck",{Name="Enemies only (ESP, aim and hitboxes)",Callback=function() updateESP();updateHitboxes() end})
 settingControl(visualsTab,"CreateToggle","names",{Name="Names, health and distance"})
 settingControl(visualsTab,"CreateSlider","distance",{Name="ESP distance",Range={500,30000},Increment=500,Suffix="studs"})
+settingControl(visualsTab,"CreateToggle","vehicleESP",{Name="Vehicle ESP",Callback=updateVehicles})
+settingControl(visualsTab,"CreateSlider","vehicleRange",{Name="Vehicle ESP distance",Range={500,30000},Increment=500,Suffix="studs"})
+settingControl(visualsTab,"CreateToggle","threats",{Name="Incoming vehicle alerts"})
+settingControl(visualsTab,"CreateSlider","threatRange",{Name="Incoming alert radius",Range={250,5000},Increment=50,Suffix="studs"})
+visualsTab:CreateParagraph({Title="Incoming alerts",Content="Warns about hostile ships, aircraft and submarines closing in faster than 5 studs/sec. Alerts pause for 6 seconds globally and 20 seconds per vehicle. Only loaded vehicles are tracked."})
+local filtersTab=window:CreateTab("Target filters",0)
+for _,kind in ipairs({"Players","Ships","Aircraft","Submarines"}) do
+    settingControl(filtersTab,"CreateToggle","filter"..kind,{Name="Include "..kind,Callback=function() updateESP();updateHitboxes();updateVehicles() end})
+end
+settingControl(filtersTab,"CreateSlider","aimPlayerRange",{Name="Player aim distance",Range={25,400},Increment=25,Suffix="studs"})
+settingControl(filtersTab,"CreateSlider","aimVehicleRange",{Name="RPG vehicle aim distance",Range={100,3000},Increment=100,Suffix="studs"})
+filtersTab:CreateParagraph({Title="Filters",Content="Categories apply to ESP, incoming alerts and silent aim. Player hitbox expansion follows Include Players. Vehicle targeting is RPG only; the rifle uses player targets. Enemies-only is controlled in ESP. Unknown vehicle teams are hidden when enemies-only is on."})
 local tpTab=window:CreateTab("Teleports",0)
 for _,code in ipairs({"A","B","C","USA","Japan"}) do
     tpTab:CreateButton({Name=(#code==1 and "Island " or "Harbor ")..code,Callback=function() teleport(code) end})
 end
 tpTab:CreateParagraph({Title="Loaded destinations",Content="Uses IslandCode A/B/C and the USDock/JapanDock harbor decks. Exit your vehicle first. Destinations must be loaded."})
+settingControl(tpTab,"CreateToggle","teleportKeys",{Name="Enable teleport hotkeys"})
+local function keyControl(tab,key,name,onChange)
+    local handle
+    handle=tab:CreateKeybind({Name=name,CurrentKeybind=settings[key],HoldToInteract=false,CallOnChange=true,Callback=function(value)
+        if not validKey(value) then return end
+        lastKeyEdit=os.clock()
+        if not applyingPreset then
+            for _,other in ipairs({"menuKey","keyA","keyB","keyC","keyUSA","keyJapan"}) do
+                if other~=key and settings[other]==value then
+                    notify("That key is already assigned. Choose a different key.")
+                    if handle then handle:Set(settings[key]) end
+                    return
+                end
+            end
+        end
+        settings[key]=value
+        if not applyingPreset then if onChange then onChange(value) end;queueSave() end
+    end})
+    controls[key]=handle
+    return handle
+end
+for _,code in ipairs({"A","B","C","USA","Japan"}) do
+    keyControl(tpTab,"key"..code,(#code==1 and "Island " or "Harbor ")..code.." hotkey")
+end
+tpTab:CreateParagraph({Title="Default hotkeys",Content="F2: A, F3: B, F4: C, F5: USA harbor, F6: Japan harbor. Enable teleport hotkeys above. Keys do not activate while typing or editing a keybind."})
 local gunsTab=window:CreateTab("Weapons",0)
 local function setMod(key,value)
     settings[key]=value
@@ -365,19 +531,93 @@ settingControl(gunsTab,"CreateToggle","hitbox",{Name="Hitbox expander",Callback=
 settingControl(gunsTab,"CreateSlider","hitboxSize",{Name="Hitbox size",Range={2,30},Increment=1,Suffix="studs",Callback=updateHitboxes})
 settingControl(gunsTab,"CreateSlider","hitboxTransparency",{Name="Hitbox transparency",Range={0,1},Increment=0.05,Callback=updateHitboxes})
 gunsTab:CreateParagraph({Title="Hitboxes",Content="Expands player root hitboxes locally. Uses the enemies-only setting. Turning it off or unloading restores original sizes and visibility. Server hit validation still applies."})
-gunsTab:CreateParagraph({Title="Weapon scope",Content="M1 Garand and RPG only. Full auto repeats while you hold fire and stops on release. Ammo and reload settings still apply. Silent aim selects a player near your cursor within 400 studs without moving your camera. Server checks still apply; vehicle ammo and cooldowns are not modified."})
+gunsTab:CreateParagraph({Title="Weapon scope",Content="M1 Garand and RPG only. Full auto repeats while you hold fire. Silent aim selects targets near the cursor using Target filters; RPG can target vehicles. Server checks still apply; vehicle ammo and cooldowns are not modified."})
 local systemTab=window:CreateTab("Settings",0)
-systemTab:CreateKeybind({Name="Hide / show menu",CurrentKeybind=settings.menuKey,
-    HoldToInteract=false,CallOnChange=true,Callback=function(key)
-        local valid=pcall(function() assert(Enum.KeyCode[key] and key~="Unknown") end)
-        if not valid then return end
+keyControl(systemTab,"menuKey","Hide / show menu",function(key)
         if not Rayfield.NavalSetMenuKey then
             notify("This Rayfield version cannot rebind the menu; F1 remains active.");return
         end
-        settings.menuKey=key
         Rayfield:NavalSetMenuKey(key)
-        queueSave()
-    end})
+    end)
+local presetsTab=window:CreateTab("Presets",0)
+local function builtIn(changes)
+    local result=table.clone(defaults)
+    for key,value in pairs(changes) do result[key]=value end
+    return result
+end
+local builtIns={
+    Infantry=builtIn({esp=true,filterShips=false,filterAircraft=false,filterSubmarines=false}),
+    Naval=builtIn({vehicleESP=true,threats=true,esp=true,vehicleRange=20000,threatRange=2000}),
+    Flying=builtIn({vehicleESP=true,threats=true,vehicleRange=25000,threatRange=3000})}
+local presets={}
+local presetPath="NavalWarfare/presets.json"
+if configAvailable then
+    local success,data=pcall(function() return HttpService:JSONDecode(readfile(presetPath)) end)
+    if success and type(data)=="table" and data.Version==1 and type(data.Presets)=="table" then
+        for name,values in pairs(data.Presets) do
+            if type(name)=="string" and #name<=32 and type(values)=="table" and not builtIns[name] then presets[name]=values end
+        end
+    end
+end
+local function presetNames()
+    local names={"Infantry","Naval","Flying"}
+    local custom={};for name in pairs(presets) do table.insert(custom,name) end
+    table.sort(custom);for _,name in ipairs(custom) do table.insert(names,name) end
+    return names
+end
+local selectedPreset="Infantry"
+local customName=""
+local presetDropdown=presetsTab:CreateDropdown({Name="Select preset",Options=presetNames(),CurrentOption={selectedPreset},MultipleOptions=false,Callback=function(value) selectedPreset=value[1] end})
+presetsTab:CreateInput({Name="Custom preset name",PlaceholderText="Up to 32 characters",RemoveTextAfterFocusLost=false,Callback=function(value) customName=tostring(value):match("^%s*(.-)%s*$") end})
+local function savePresets()
+    if not configAvailable then notify("Preset saving requires file support.");return false end
+    local success,err=pcall(function() writefile(presetPath,HttpService:JSONEncode({Version=1,Presets=presets})) end)
+    if not success then notify("Could not save presets: "..tostring(err)) end
+    return success
+end
+presetsTab:CreateButton({Name="Save current settings as custom preset",Callback=function()
+    if customName=="" or #customName>32 then notify("Enter a preset name from 1 to 32 characters.");return end
+    if builtIns[customName] then notify("Choose a custom name; built-in presets are reserved.");return end
+    local old=presets[customName]
+    presets[customName]=table.clone(settings)
+    if not savePresets() then presets[customName]=old;return end
+    presetDropdown:Refresh(presetNames());presetDropdown:Set({customName})
+    selectedPreset=customName
+    notify("Saved preset: "..customName)
+end})
+presetsTab:CreateButton({Name="Load selected preset",Callback=function()
+    local values=builtIns[selectedPreset] or presets[selectedPreset]
+    if not values then notify("Select a valid preset first.");return end
+    applyingPreset=true
+    applySettings(defaults);applySettings(values)
+    local seen={}
+    for _,key in ipairs({"menuKey","keyA","keyB","keyC","keyUSA","keyJapan"}) do
+        if seen[settings[key]] then
+            for _,reset in ipairs({"menuKey","keyA","keyB","keyC","keyUSA","keyJapan"}) do settings[reset]=defaults[reset] end
+            break
+        end
+        seen[settings[key]]=true
+    end
+    local desired=table.clone(settings)
+    local success,err=pcall(function()
+        for key,handle in pairs(controls) do handle:Set(desired[key]) end
+    end)
+    applyingPreset=false
+    applySettings(desired)
+    if Rayfield.NavalSetMenuKey then Rayfield:NavalSetMenuKey(settings.menuKey) end
+    for _,r in pairs(records) do r.held=false;r.ready=0;r.ammo=r.capacity end
+    refreshTools();updateESP();updateHitboxes();updateVehicles();queueSave()
+    notify(success and "Loaded preset: "..selectedPreset or "Settings loaded; a UI control could not refresh: "..tostring(err))
+end})
+presetsTab:CreateButton({Name="Delete selected custom preset",Callback=function()
+    if not presets[selectedPreset] then notify("Only custom presets can be deleted.");return end
+    local name,old=selectedPreset,presets[selectedPreset]
+    presets[name]=nil
+    if not savePresets() then presets[name]=old;return end
+    selectedPreset="Infantry";presetDropdown:Refresh(presetNames());presetDropdown:Set({selectedPreset})
+    notify("Deleted preset: "..name)
+end})
+presetsTab:CreateParagraph({Title="Preset files",Content="Infantry, Naval and Flying are built in. Custom presets store all settings and keybinds in NavalWarfare/presets.json. Loading a preset immediately applies it and updates the menu."})
 local cleanup
 cleanup=function()
     if not alive then return end
@@ -387,6 +627,7 @@ cleanup=function()
     for _,c in ipairs(links) do c:Disconnect() end
     refreshTools()
     restoreHitboxes()
+    for model in pairs(vehicleVisuals) do removeVehicleVisual(model) end
     folder:Destroy()
     pcall(function() Rayfield:Destroy() end)
     if env.NavalWarfareCleanup==cleanup then env.NavalWarfareCleanup=nil end
@@ -396,18 +637,31 @@ systemTab:CreateButton({Name="Unload and restore weapon callbacks",Callback=clea
 systemTab:CreateButton({Name="Save settings now",Callback=function() saveConfig(false) end})
 systemTab:CreateParagraph({Title="Config file",Content=configAvailable and "Settings save automatically to NavalWarfare/settings.json in your executor workspace and load next time you run this script." or "Config saving is unavailable: this executor needs readfile, writefile and makefolder support."})
 systemTab:CreateParagraph({Title="Controls",Content="F1 hides/shows the menu by default. Change Hide / show menu above to rebind; your choice saves in the config. Re-running unloads the previous copy."})
-local elapsed=0
+local elapsed,scanElapsed=0,0
+scanVehicles()
 connect(RunService.Heartbeat,function(dt)
     for tool,r in pairs(records) do
         if tool.Parent~=player.Character then r.held=false end
         if settings.fullAuto and r.held then fire(tool,r) end
     end
     elapsed+=dt
+    scanElapsed+=dt
+    if scanElapsed>=2 then scanElapsed=0;scanVehicles() end
     if elapsed<0.2 then return end
     elapsed=0
     updateESP()
     updateHitboxes()
+    updateVehicles()
     refreshTools()
+end)
+local lastTeleport=-math.huge
+connect(UIS.InputBegan,function(input,processed)
+    if processed or UIS:GetFocusedTextBox() or not settings.teleportKeys or os.clock()-lastKeyEdit<0.3 or os.clock()-lastTeleport<1 then return end
+    for _,code in ipairs({"A","B","C","USA","Japan"}) do
+        if input.KeyCode==Enum.KeyCode[settings["key"..code]] then
+            lastTeleport=os.clock();teleport(code);return
+        end
+    end
 end)
 connect(UIS.InputEnded,function(input)
     if input.UserInputType==Enum.UserInputType.MouseButton1 then
