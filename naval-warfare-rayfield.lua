@@ -10,15 +10,23 @@ assert(player, "Run this on the client")
 local env = (getgenv and getgenv()) or _G
 if env.NavalWarfareCleanup then pcall(env.NavalWarfareCleanup) end
 local ok, Rayfield = pcall(function()
-    return loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+    local source=game:HttpGet("https://sirius.menu/rayfield")
+    -- Use Rayfield's existing visibility handler so each press toggles only once.
+    source=source:gsub("return RayfieldLibrary%s*$",[[
+function RayfieldLibrary:NavalSetMenuKey(key)
+    overrideSetting("General", "rayfieldOpen", key)
+end
+return RayfieldLibrary
+]])
+    return loadstring(source)()
 end)
 assert(ok, "Rayfield failed to load: " .. tostring(Rayfield))
 local window = Rayfield:CreateWindow({Name="Naval Warfare", LoadingTitle="Naval Warfare",
-    LoadingSubtitle="ESP / Teleports / Weapons", ToggleUIKeybind=Enum.KeyCode.RightShift,
+    LoadingSubtitle="ESP / Teleports / Weapons", ToggleUIKeybind=Enum.KeyCode.F1,
     ConfigurationSaving={Enabled=false}, Discord={Enabled=false}, KeySystem=false})
 local settings = {esp=false, teamCheck=true, names=true, distance=15000,
     infinite=false, noCooldown=false, silent=false, fullAuto=false, fov=180, wallCheck=true,
-    hitbox=false, hitboxSize=10, hitboxTransparency=0.7}
+    hitbox=false, hitboxSize=10, hitboxTransparency=0.7, menuKey="F1"}
 local alive, links, records, visuals = true, {}, {}, {}
 local folder = Instance.new("Folder")
 folder.Name = "NavalLocalVisuals"
@@ -49,6 +57,11 @@ if configAvailable then
         else configError="Saved settings could not be read; defaults were loaded." end
     end
 end
+local validMenuKey=pcall(function()
+    assert(Enum.KeyCode[settings.menuKey] and settings.menuKey~="Unknown")
+end)
+if not validMenuKey then settings.menuKey="F1" end
+if Rayfield.NavalSetMenuKey then Rayfield:NavalSetMenuKey(settings.menuKey) end
 local function saveConfig(quiet)
     if not configAvailable then
         if not quiet then notify("This executor does not provide config file support.") end
@@ -354,6 +367,17 @@ settingControl(gunsTab,"CreateSlider","hitboxTransparency",{Name="Hitbox transpa
 gunsTab:CreateParagraph({Title="Hitboxes",Content="Expands player root hitboxes locally. Uses the enemies-only setting. Turning it off or unloading restores original sizes and visibility. Server hit validation still applies."})
 gunsTab:CreateParagraph({Title="Weapon scope",Content="M1 Garand and RPG only. Full auto repeats while you hold fire and stops on release. Ammo and reload settings still apply. Silent aim selects a player near your cursor within 400 studs without moving your camera. Server checks still apply; vehicle ammo and cooldowns are not modified."})
 local systemTab=window:CreateTab("Settings",0)
+systemTab:CreateKeybind({Name="Hide / show menu",CurrentKeybind=settings.menuKey,
+    HoldToInteract=false,CallOnChange=true,Callback=function(key)
+        local valid=pcall(function() assert(Enum.KeyCode[key] and key~="Unknown") end)
+        if not valid then return end
+        if not Rayfield.NavalSetMenuKey then
+            notify("This Rayfield version cannot rebind the menu; F1 remains active.");return
+        end
+        settings.menuKey=key
+        Rayfield:NavalSetMenuKey(key)
+        queueSave()
+    end})
 local cleanup
 cleanup=function()
     if not alive then return end
@@ -371,7 +395,7 @@ env.NavalWarfareCleanup=cleanup
 systemTab:CreateButton({Name="Unload and restore weapon callbacks",Callback=cleanup})
 systemTab:CreateButton({Name="Save settings now",Callback=function() saveConfig(false) end})
 systemTab:CreateParagraph({Title="Config file",Content=configAvailable and "Settings save automatically to NavalWarfare/settings.json in your executor workspace and load next time you run this script." or "Config saving is unavailable: this executor needs readfile, writefile and makefolder support."})
-systemTab:CreateParagraph({Title="Controls",Content="Right Shift opens/closes the menu. Re-running unloads the previous copy. Turn all weapon toggles off to restore the original firing callbacks."})
+systemTab:CreateParagraph({Title="Controls",Content="F1 hides/shows the menu by default. Change Hide / show menu above to rebind; your choice saves in the config. Re-running unloads the previous copy."})
 local elapsed=0
 connect(RunService.Heartbeat,function(dt)
     for tool,r in pairs(records) do
@@ -394,4 +418,4 @@ connect(UIS.WindowFocusReleased,function()
     for _,r in pairs(records) do r.held=false end
 end)
 if configError then notify(configError) end
-notify("Loaded. Right Shift toggles the menu. Settings restore automatically when file support is available.")
+notify("Loaded. "..settings.menuKey.." hides/shows the menu. Change it under Settings.")
