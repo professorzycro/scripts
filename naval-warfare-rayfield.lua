@@ -17,7 +17,7 @@ local window = Rayfield:CreateWindow({Name="Naval Warfare", LoadingTitle="Naval 
     LoadingSubtitle="ESP / Teleports / Weapons", ToggleUIKeybind=Enum.KeyCode.RightShift,
     ConfigurationSaving={Enabled=false}, Discord={Enabled=false}, KeySystem=false})
 local settings = {esp=false, teamCheck=true, names=true, distance=15000,
-    infinite=false, noCooldown=false, silent=false, fov=180, wallCheck=true}
+    infinite=false, noCooldown=false, silent=false, fullAuto=false, fov=180, wallCheck=true}
 local alive, links, records, visuals = true, {}, {}, {}
 local folder = Instance.new("Folder")
 folder.Name = "NavalLocalVisuals"
@@ -103,17 +103,23 @@ end
 connect(Players.PlayerRemoving,removeVisual)
 local function destination(code)
     if code=="USA" or code=="Japan" then
-        local name=code=="USA" and "USSpawn" or "JapanSpawn"
         local dock=workspace:FindFirstChild(code=="USA" and "USDock" or "JapanDock")
-        if dock then
-            for _,v in ipairs(dock:GetDescendants()) do
-                if v:IsA("SpawnLocation") and v.Name==name then return v end
+        if not dock then return end
+        -- Land on a broad harbor deck, not a lobby/team spawn or flagpole.
+        for _,section in ipairs({"ShipsYard","ConcreteBases"}) do
+            local area=dock:FindFirstChild(section,true)
+            local best,score=nil,0
+            for _,part in ipairs(area and area:GetDescendants() or {}) do
+                if part:IsA("BasePart") and not part:IsA("SpawnLocation") and part.CanCollide and part.Anchored then
+                    local surface=part.Size.X*part.Size.Z
+                    if part.Size.Y<math.min(part.Size.X,part.Size.Z) and part.CFrame.UpVector.Y>0.95 and surface>score then
+                        best=part;score=surface
+                    end
+                end
             end
+            if best then return best end
         end
-        for _,v in ipairs(workspace:GetDescendants()) do
-            if v:IsA("SpawnLocation") and v.Name==name then return v end
-        end
-        return dock and dock:FindFirstChild("Flag",true)
+        return nil
     end
     for _,island in ipairs(workspace:GetChildren()) do
         local key=island:FindFirstChild("IslandCode")
@@ -137,7 +143,7 @@ local function teleport(code)
     local root=c:FindFirstChild("HumanoidRootPart")
     if root then root.AssemblyLinearVelocity=Vector3.zero;root.AssemblyAngularVelocity=Vector3.zero end
 end
-local function modsOn() return settings.infinite or settings.noCooldown or settings.silent end
+local function modsOn() return settings.infinite or settings.noCooldown or settings.silent or settings.fullAuto end
 local function gunHUD(tool,text)
     local pg=player:FindFirstChildOfClass("PlayerGui")
     local screen=pg and pg:FindFirstChild("ScreenGui")
@@ -191,6 +197,7 @@ local function fire(tool,record)
 end
 local function restoreTool(tool,r)
     if r.connection then r.connection:Disconnect() end
+    if r.release then r.release:Disconnect() end
     for _,c in ipairs(r.originals) do pcall(function() c:Enable() end) end
     gunHUD(tool,tool.Name=="RPG" and "1/1" or "5/5")
     records[tool]=nil
@@ -217,7 +224,8 @@ local function installTool(tool)
     end
     if #r.originals==0 then return end
     records[tool]=r
-    r.connection=tool.Activated:Connect(function() fire(tool,r) end)
+    r.connection=tool.Activated:Connect(function() r.held=true;fire(tool,r) end)
+    r.release=tool.Deactivated:Connect(function() r.held=false end)
 end
 local function refreshTools()
     if not modsOn() then
@@ -242,9 +250,9 @@ visualsTab:CreateToggle({Name="Names, health and distance",CurrentValue=true,Cal
 visualsTab:CreateSlider({Name="ESP distance",Range={500,30000},Increment=500,Suffix="studs",CurrentValue=15000,Callback=function(v) settings.distance=v end})
 local tpTab=window:CreateTab("Teleports",0)
 for _,code in ipairs({"A","B","C","USA","Japan"}) do
-    tpTab:CreateButton({Name=(#code==1 and "Island " or "Base ")..code,Callback=function() teleport(code) end})
+    tpTab:CreateButton({Name=(#code==1 and "Island " or "Harbor ")..code,Callback=function() teleport(code) end})
 end
-tpTab:CreateParagraph({Title="Loaded destinations",Content="Uses IslandCode A/B/C, USSpawn and JapanSpawn from the supplied saves. Exit your vehicle first. Destinations must be loaded."})
+tpTab:CreateParagraph({Title="Loaded destinations",Content="Uses IslandCode A/B/C and the USDock/JapanDock harbor decks. Exit your vehicle first. Destinations must be loaded."})
 local gunsTab=window:CreateTab("Weapons",0)
 local function setMod(key,value)
     settings[key]=value
@@ -253,16 +261,17 @@ local function setMod(key,value)
 end
 gunsTab:CreateToggle({Name="Infinite ammo (rifle / RPG client)",CurrentValue=false,Callback=function(v) setMod("infinite",v) end})
 gunsTab:CreateToggle({Name="No reload cooldown (rifle / RPG client)",CurrentValue=false,Callback=function(v) setMod("noCooldown",v) end})
+gunsTab:CreateToggle({Name="Full auto (hold fire)",CurrentValue=false,Callback=function(v) setMod("fullAuto",v) end})
 gunsTab:CreateToggle({Name="Silent aim (rifle / RPG)",CurrentValue=false,Callback=function(v) setMod("silent",v) end})
 gunsTab:CreateToggle({Name="Silent aim visibility check",CurrentValue=true,Callback=function(v) settings.wallCheck=v end})
 gunsTab:CreateSlider({Name="Silent aim radius",Range={25,600},Increment=5,Suffix="pixels",CurrentValue=180,Callback=function(v) settings.fov=v end})
-gunsTab:CreateParagraph({Title="Weapon scope",Content="M1 Garand and RPG only. Click normally to shoot. Silent aim selects a player near your cursor within 400 studs without moving your camera. Server checks still apply; vehicle ammo and cooldowns are not modified."})
+gunsTab:CreateParagraph({Title="Weapon scope",Content="M1 Garand and RPG only. Full auto repeats while you hold fire and stops on release. Ammo and reload settings still apply. Silent aim selects a player near your cursor within 400 studs without moving your camera. Server checks still apply; vehicle ammo and cooldowns are not modified."})
 local systemTab=window:CreateTab("Settings",0)
 local cleanup
 cleanup=function()
     if not alive then return end
     alive=false
-    settings.esp=false;settings.infinite=false;settings.noCooldown=false;settings.silent=false
+    settings.esp=false;settings.infinite=false;settings.noCooldown=false;settings.silent=false;settings.fullAuto=false
     for _,c in ipairs(links) do c:Disconnect() end
     refreshTools()
     folder:Destroy()
@@ -274,10 +283,22 @@ systemTab:CreateButton({Name="Unload and restore weapon callbacks",Callback=clea
 systemTab:CreateParagraph({Title="Controls",Content="Right Shift opens/closes the menu. Re-running unloads the previous copy. Turn all weapon toggles off to restore the original firing callbacks."})
 local elapsed=0
 connect(RunService.Heartbeat,function(dt)
+    for tool,r in pairs(records) do
+        if tool.Parent~=player.Character then r.held=false end
+        if settings.fullAuto and r.held then fire(tool,r) end
+    end
     elapsed+=dt
     if elapsed<0.2 then return end
     elapsed=0
     updateESP()
     refreshTools()
+end)
+connect(UIS.InputEnded,function(input)
+    if input.UserInputType==Enum.UserInputType.MouseButton1 then
+        for _,r in pairs(records) do r.held=false end
+    end
+end)
+connect(UIS.WindowFocusReleased,function()
+    for _,r in pairs(records) do r.held=false end
 end)
 notify("Loaded. Enable features in the tabs; Right Shift toggles the menu.")
